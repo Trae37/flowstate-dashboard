@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+app-output.log
+localhost-*.log
+electron-test.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Electron
+out/
+release/
+
+# Test files
+*.test.js
+check-*.js
+test-*.js
+
+# Context files
+.flowstate_context.md
+
+# Reserved Windows names
+nul
+con
+prn
+aux

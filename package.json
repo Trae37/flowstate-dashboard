@@ -1,0 +1,51 @@
+{
+  "name": "flowstate-dashboard",
+  "version": "1.0.0",
+  "main": "dist/main/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
+    "dev:vite": "vite",
+    "dev:electron": "tsc -p tsconfig.main.json && npm run copy:preload && electron .",
+    "copy:preload": "node -e \"require('fs').mkdirSync('dist/main/preload', {recursive: true}); require('fs').copyFileSync('src/preload/preload.js', 'dist/main/preload/preload.js')\"",
+    "build": "tsc -p tsconfig.main.json && npm run copy:preload && vite build",
+    "build:app": "npm run build && electron-builder",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "workspace",
+    "context",
+    "productivity",
+    "developer-tools"
+  ],
+  "author": "",
+  "license": "ISC",
+  "description": "Flow State Dashboard - Capture and restore your development workspace context",
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "chrome-remote-interface": "^0.33.3",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.12",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.5",
+    "sql.js": "^1.13.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/chrome-remote-interface": "^0.31.14",
+    "@types/node": "^24.9.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^5.1.0",
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "electron-vite": "^4.0.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.12"
+  }
+}

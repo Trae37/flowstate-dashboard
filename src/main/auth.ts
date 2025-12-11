@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'crypto';
 import { prepare } from './database.js';
+import { validateEmail, validatePassword, validateUsername, sanitizeString } from './utils/security.js';
 
 export interface User {
   id: number;
@@ -39,19 +40,28 @@ function generateSessionToken(): string {
  */
 export async function createUser(email: string, password: string, username?: string): Promise<{ success: boolean; user?: User; error?: string }> {
   try {
-    // Validate email format
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
+    // Sanitize and validate inputs
+    const sanitizedEmail = sanitizeString(email.toLowerCase().trim(), 254);
+    if (!validateEmail(sanitizedEmail)) {
       return { success: false, error: 'Invalid email format' };
     }
 
-    // Validate password length
-    if (password.length < 8) {
-      return { success: false, error: 'Password must be at least 8 characters long' };
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.valid) {
+      return { success: false, error: passwordValidation.error || 'Invalid password' };
+    }
+
+    // Validate username if provided
+    if (username) {
+      const sanitizedUsername = sanitizeString(username.trim(), 30);
+      if (!validateUsername(sanitizedUsername)) {
+        return { success: false, error: 'Username must be 3-30 characters and contain only letters, numbers, underscores, and hyphens' };
+      }
+      username = sanitizedUsername;
     }
 
     // Check if user already exists
-    const existingUser = prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existingUser = prepare('SELECT id FROM users WHERE email = ?').get(sanitizedEmail);
     console.log(`[Auth] Checking for existing user with email: ${email}`);
     console.log(`[Auth] Existing user result:`, existingUser);
     if (existingUser) {
@@ -75,7 +85,7 @@ export async function createUser(email: string, password: string, username?: str
     const result = prepare(`
       INSERT INTO users (email, username, password_hash, onboarding_completed)
       VALUES (?, ?, ?, 0)
-    `).run(email, username || null, passwordHash);
+    `).run(sanitizedEmail, username || null, passwordHash);
 
     const userId = result.lastInsertRowid as number;
 
@@ -101,8 +111,14 @@ export async function createUser(email: string, password: string, username?: str
  */
 export async function loginUser(email: string, password: string): Promise<{ success: boolean; session?: Session; user?: User; error?: string }> {
   try {
+    // Sanitize email
+    const sanitizedEmail = sanitizeString(email.toLowerCase().trim(), 254);
+    if (!validateEmail(sanitizedEmail)) {
+      return { success: false, error: 'Invalid email format' };
+    }
+
     // Find user by email
-    const userRow = prepare('SELECT id, email, username, password_hash, created_at, last_login, onboarding_completed FROM users WHERE email = ?').get(email) as any;
+    const userRow = prepare('SELECT id, email, username, password_hash, created_at, last_login, onboarding_completed FROM users WHERE email = ?').get(sanitizedEmail) as any;
 
     if (!userRow) {
       return { success: false, error: 'Invalid email or password' };
@@ -129,6 +145,25 @@ export async function loginUser(email: string, password: string): Promise<{ succ
 
     // Update last login
     prepare('UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?').run(userRow.id);
+
+    // Create a new work session for the user on login if they don't have an active one
+    // Note: We do NOT automatically archive existing sessions - archiving is manual only
+    try {
+      const { getUserWorkSessions, createWorkSession } = await import('./session-management.js');
+      const existingSessions = getUserWorkSessions(userRow.id, false); // Get non-archived sessions
+      
+      // Only create a new session if the user doesn't have any active sessions
+      // This allows users to continue their work across login sessions
+      if (existingSessions.length === 0) {
+        createWorkSession(userRow.id);
+        console.log(`[Auth] Created new work session for user ${userRow.id} on login`);
+      } else {
+        console.log(`[Auth] User ${userRow.id} already has ${existingSessions.length} active session(s), not creating new one`);
+      }
+    } catch (sessionError) {
+      // Don't fail login if session management fails
+      console.warn('[Auth] Error managing sessions on login:', sessionError);
+    }
 
     const session = prepare('SELECT id, user_id, session_token, created_at, expires_at FROM sessions WHERE session_token = ?').get(sessionToken) as Session;
 
@@ -192,9 +227,33 @@ export async function verifySession(sessionToken: string): Promise<{ success: bo
 
 /**
  * Logout user by deleting session
+ * Also archives the current work session if it exists and has captures
  */
 export async function logoutUser(sessionToken: string): Promise<{ success: boolean; error?: string }> {
   try {
+    // Get user ID from session before deleting it
+    const session = prepare('SELECT user_id FROM sessions WHERE session_token = ?').get(sessionToken) as { user_id: number } | null;
+    
+    if (session) {
+      const userId = session.user_id;
+      
+      // Archive the current work session if it exists and has captures
+      try {
+        const { getCurrentWorkSession, archiveWorkSession } = await import('./session-management.js');
+        const currentSession = getCurrentWorkSession(userId);
+        
+        // Only archive if the session has captures (to avoid archiving empty sessions)
+        if (currentSession.capture_count && currentSession.capture_count > 0) {
+          archiveWorkSession(currentSession.id!);
+          console.log(`[Auth] Archived work session ${currentSession.id} on logout`);
+        }
+      } catch (sessionError) {
+        // Don't fail logout if session archiving fails
+        console.warn('[Auth] Error archiving session on logout:', sessionError);
+      }
+    }
+    
+    // Delete the auth session
     prepare('DELETE FROM sessions WHERE session_token = ?').run(sessionToken);
     console.log('[Auth] User logged out');
     return { success: true };

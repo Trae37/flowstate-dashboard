@@ -1,0 +1,22 @@
+{
+  "name": "notification-monitor",
+  "version": "1.0.0",
+  "description": "Native notification monitoring module for FlowState",
+  "main": "index.js",
+  "gypfile": true,
+  "scripts": {
+    "install": "node-gyp rebuild"
+  },
+  "keywords": [
+    "notification",
+    "native",
+    "addon"
+  ],
+  "author": "",
+  "license": "ISC"
+}
+
+
+
+
+

@@ -39,6 +39,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loadSession = async () => {
     try {
+      // Check if electronAPI is available
+      if (!window.electronAPI || !window.electronAPI.authVerifySession) {
+        console.warn('[AuthContext] electronAPI not available yet, skipping session load');
+        setLoading(false);
+        return;
+      }
+
       const storedToken = localStorage.getItem(SESSION_STORAGE_KEY);
       if (!storedToken) {
         setLoading(false);
@@ -55,6 +62,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
         setUser(user);
         setSessionToken(storedToken);
+        
+        // Initialize analytics if enabled
+        try {
+          const settingsResult = await window.electronAPI.getSettings(user.id);
+          if (settingsResult.success && settingsResult.data?.analyticsEnabled) {
+            const { analytics } = await import('../utils/analytics');
+            await analytics.initialize(user.id, {
+              enabled: true,
+              posthogApiKey: settingsResult.data.posthogApiKey,
+              posthogHost: settingsResult.data.posthogHost,
+            });
+          }
+        } catch (analyticsError) {
+          // Don't fail session load if analytics fails
+          console.warn('Failed to initialize analytics:', analyticsError);
+        }
       } else {
         // Invalid session, clear it
         localStorage.removeItem(SESSION_STORAGE_KEY);
@@ -80,6 +103,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(user);
         setSessionToken(result.session.session_token);
         localStorage.setItem(SESSION_STORAGE_KEY, result.session.session_token);
+        
+        // Initialize analytics if enabled
+        try {
+          const settingsResult = await window.electronAPI.getSettings(user.id);
+          if (settingsResult.success && settingsResult.data?.analyticsEnabled) {
+            const { analytics } = await import('../utils/analytics');
+            await analytics.initialize(user.id, {
+              enabled: true,
+              posthogApiKey: settingsResult.data.posthogApiKey,
+              posthogHost: settingsResult.data.posthogHost,
+            });
+            analytics.track('user_logged_in');
+          }
+        } catch (analyticsError) {
+          // Don't fail login if analytics fails
+          console.warn('Failed to initialize analytics:', analyticsError);
+        }
+        
         return { success: true };
       } else {
         return { success: false, error: result.error || 'Login failed' };
@@ -113,6 +154,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     try {
+      // Reset analytics before logout
+      try {
+        const { analytics } = await import('../utils/analytics');
+        analytics.reset();
+      } catch (analyticsError) {
+        // Don't fail logout if analytics fails
+        console.warn('Failed to reset analytics:', analyticsError);
+      }
+      
       if (sessionToken) {
         await window.electronAPI.authLogout(sessionToken);
       }

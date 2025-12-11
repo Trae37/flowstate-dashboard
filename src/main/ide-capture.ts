@@ -142,18 +142,30 @@ async function isIDERunning(
 ): Promise<boolean> {
   try {
     if (process.platform === 'win32') {
+      const { sanitizeProcessName } = await import('./utils/security.js');
+      const sanitizedProcess = sanitizeProcessName(windowsProcessName);
       const { stdout } = await execPromise(
-        `tasklist /FI "IMAGENAME eq ${windowsProcessName}"`
+        `tasklist /FI "IMAGENAME eq ${sanitizedProcess}"`
       );
-      return stdout.includes(windowsProcessName);
+      const isRunning = stdout.includes(windowsProcessName);
+      console.log(`[IDE Capture] Process check for ${windowsProcessName}: ${isRunning ? 'FOUND' : 'NOT FOUND'}`);
+      if (!isRunning) {
+        console.log(`[IDE Capture] Tasklist output (first 500 chars): ${stdout.substring(0, 500)}`);
+      }
+      return isRunning;
     } else if (process.platform === 'darwin') {
       const { stdout } = await execPromise(
         `ps aux | grep "${macProcessName}" | grep -v grep || true`
       );
-      return stdout.trim().length > 0;
+      const isRunning = stdout.trim().length > 0;
+      console.log(`[IDE Capture] Process check for ${macProcessName}: ${isRunning ? 'FOUND' : 'NOT FOUND'}`);
+      return isRunning;
     }
   } catch (error) {
     console.warn(`[IDE Capture] Failed to check if ${windowsProcessName} is running:`, error);
+    if (error instanceof Error) {
+      console.warn(`[IDE Capture] Error details: ${error.message}`);
+    }
   }
   return false;
 }
@@ -195,13 +207,14 @@ async function captureIDEState(
 
     // Read workspace state to get currently open workspace
     const workspaceStoragePath = path.join(stateDir, 'workspaceStorage');
+    console.log(`[IDE Capture] Checking workspace storage: ${workspaceStoragePath}`);
     if (fs.existsSync(workspaceStoragePath)) {
       const workspaces = fs.readdirSync(workspaceStoragePath);
 
-      // Find workspaces that have been actively used very recently (within last 5 minutes)
-      // This indicates the workspace is currently open
+      // Find workspaces that have been actively used recently
+      // Use a longer threshold to catch workspaces that are open but not actively being edited
       const now = Date.now();
-      const recentThreshold = 5 * 60 * 1000; // 5 minutes
+      const recentThreshold = 30 * 60 * 1000; // 30 minutes (increased from 5 minutes)
 
       const activeWorkspaces = workspaces
         .map((workspaceId) => {
@@ -240,11 +253,39 @@ async function captureIDEState(
           return b!.mtime.getTime() - a!.mtime.getTime();
         });
 
-      // Process only the currently active workspace
+      // Process the most recently active workspace, or fall back to most recent if none are active
       console.log(`[IDE Capture] Found ${activeWorkspaces.length} active workspace(s)`);
-      if (activeWorkspaces.length > 0) {
-        const activeWorkspace = activeWorkspaces[0]!;
-        const workspaceId = activeWorkspace.workspaceId;
+      
+      // If no active workspace found, try to get the most recently modified workspace as fallback
+      let workspaceToProcess = activeWorkspaces[0];
+      if (!workspaceToProcess && workspaces.length > 0) {
+        // Fallback: get the most recently modified workspace
+        const allWorkspaces = workspaces
+          .map((workspaceId) => {
+            const workspacePath = path.join(workspaceStoragePath, workspaceId);
+            try {
+              const stateDbPath = path.join(workspacePath, 'state.vscdb');
+              if (fs.existsSync(stateDbPath)) {
+                const stateStats = fs.statSync(stateDbPath);
+                return { workspaceId, mtime: stateStats.mtime, isActive: false };
+              }
+              const folderStats = fs.statSync(workspacePath);
+              return { workspaceId, mtime: folderStats.mtime, isActive: false };
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean)
+          .sort((a, b) => b!.mtime.getTime() - a!.mtime.getTime());
+        
+        workspaceToProcess = allWorkspaces[0] || null;
+        if (workspaceToProcess) {
+          console.log(`[IDE Capture] No active workspace found, using most recent: ${workspaceToProcess.workspaceId}`);
+        }
+      }
+      
+      if (workspaceToProcess) {
+        const workspaceId = workspaceToProcess.workspaceId;
         const workspaceJsonPath = path.join(workspaceStoragePath, workspaceId, 'workspace.json');
 
         console.log(`[IDE Capture] Processing workspace: ${workspaceId}`);
@@ -301,21 +342,56 @@ async function captureIDEState(
         const { analyzeWorkspace } = await import('./workspace-analysis.js');
         const analysis = await analyzeWorkspace(workspacePath, ideName);
 
-        if (fs.existsSync(contextFilePath)) {
-          // Read existing context file
-          const content = fs.readFileSync(contextFilePath, 'utf-8');
-          session.contextFile = {
-            path: contextFilePath,
-            content: content,
-          };
-          console.log(`[IDE Capture] Found context file: ${contextFilePath}`);
-        } else if (analysis) {
-          // Create intelligent context file from analysis
+        // Always regenerate context file if we have analysis data
+        // This ensures the context is always up-to-date with current workspace state
+        if (analysis) {
           const timestamp = new Date().toISOString();
+          const isUpdate = fs.existsSync(contextFilePath);
 
           let content = `# ${ideName} Workspace Context\n\n`;
           content += `**Workspace**: ${workspacePath}\n`;
-          content += `**Created**: ${timestamp}\n\n`;
+          content += `**Last Updated**: ${timestamp}\n`;
+          
+          // Add git branch if available
+          if (analysis.gitBranch) {
+            content += `**Git Branch**: \`${analysis.gitBranch}\`\n`;
+          }
+          
+          // Add time since last work
+          if (analysis.timeSinceLastWork) {
+            content += `**Last Work**: ${analysis.timeSinceLastWork}\n`;
+          }
+          
+          content += `\n---\n\n`;
+          
+          // Quick Start Section - immediate actions
+          content += `## ⚡ Quick Start\n\n`;
+          
+          if (analysis.mostRecentFile) {
+            const fileName = path.basename(analysis.mostRecentFile);
+            content += `**Primary Focus**: \`${fileName}\`\n\n`;
+            content += `This was the most recently edited file. Start here to continue your work.\n\n`;
+          }
+          
+          if (analysis.gitStatus) {
+            const { modified, untracked } = analysis.gitStatus;
+            if (modified.length > 0 || untracked.length > 0) {
+              content += `**Uncommitted Changes**:\n`;
+              if (modified.length > 0) {
+                content += `- ${modified.length} modified file${modified.length !== 1 ? 's' : ''}\n`;
+              }
+              if (untracked.length > 0) {
+                content += `- ${untracked.length} untracked file${untracked.length !== 1 ? 's' : ''}\n`;
+              }
+              content += `\nConsider committing or continuing work on these changes.\n\n`;
+            }
+          }
+          
+          if (analysis.todoItems.length > 0) {
+            const topTodo = analysis.todoItems[0];
+            content += `**Next TODO**: ${path.basename(topTodo.file)}:${topTodo.line} - ${topTodo.text}\n\n`;
+          }
+          
           content += `---\n\n`;
 
           // AI-Assisted vs Manual Changes
@@ -381,14 +457,25 @@ async function captureIDEState(
             path: contextFilePath,
             content: content,
           };
-          console.log(`[IDE Capture] Created intelligent context file: ${contextFilePath}`);
+          console.log(`[IDE Capture] ${isUpdate ? 'Updated' : 'Created'} intelligent context file: ${contextFilePath}`);
+        } else if (fs.existsSync(contextFilePath)) {
+          // If no analysis but file exists, just read it (preserve user edits)
+          const content = fs.readFileSync(contextFilePath, 'utf-8');
+          session.contextFile = {
+            path: contextFilePath,
+            content: content,
+          };
+          console.log(`[IDE Capture] Found existing context file (no analysis available): ${contextFilePath}`);
         }
       } catch (err) {
-        console.warn(`[IDE Capture] Could not handle context file:`, err);
+        // Log the error but don't prevent session from being returned
+        console.warn(`[IDE Capture] Could not handle context file (continuing anyway):`, err);
+        // Ensure we still have the session even if context file generation failed
       }
     }
 
     // If we found any workspace info, return the session
+    // IMPORTANT: Context file generation errors should NOT prevent session from being returned
     if (session.workspacePaths.length > 0 || session.recentWorkspaces.length > 0) {
       console.log(`[IDE Capture] ${ideName} session captured:`);
       console.log(`  Workspaces: ${session.workspacePaths.length}`);
@@ -398,6 +485,13 @@ async function captureIDEState(
       return session;
     }
 
+    // If no workspace detected, return null (don't capture empty sessions)
+    console.log(`[IDE Capture] No workspace detected for ${ideName}`);
+    console.log(`[IDE Capture] Debug info: workspaceStoragePath exists: ${fs.existsSync(workspaceStoragePath)}`);
+    if (fs.existsSync(workspaceStoragePath)) {
+      const workspaces = fs.readdirSync(workspaceStoragePath);
+      console.log(`[IDE Capture] Debug info: Found ${workspaces.length} workspace(s) in storage`);
+    }
     return null;
   } catch (error) {
     console.warn(`[IDE Capture] Failed to capture ${ideName} state:`, error);
@@ -438,18 +532,135 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
   console.log(`[IDE Restore] Restoring ${session.ideName} session...`);
 
   try {
-    // Restore context file if it exists
-    if (session.contextFile && session.workspacePaths.length > 0) {
+    // Restore and optionally regenerate context file
+    if (session.workspacePaths.length > 0) {
       const workspacePath = session.workspacePaths[0];
       const contextFilePath = path.join(workspacePath, '.flowstate_context.md');
 
       try {
-        // Update the context file with restoration timestamp
-        const timestamp = new Date().toISOString();
-        const restoredContent = session.contextFile.content + `\n\n---\n**Restored**: ${timestamp}\n`;
+        // Regenerate context file with fresh analysis during restore
+        // This ensures the context is up-to-date when reopening
+        const { analyzeWorkspace } = await import('./workspace-analysis.js');
+        const analysis = await analyzeWorkspace(workspacePath, session.ideName);
 
-        fs.writeFileSync(contextFilePath, restoredContent, 'utf-8');
-        console.log(`[IDE Restore] Restored context file: ${contextFilePath}`);
+        if (analysis) {
+          const timestamp = new Date().toISOString();
+          const restoreTimestamp = new Date().toISOString();
+
+          let content = `# ${session.ideName} Workspace Context\n\n`;
+          content += `**Workspace**: ${workspacePath}\n`;
+          content += `**Last Updated**: ${timestamp}\n`;
+          content += `**Restored**: ${restoreTimestamp}\n`;
+          
+          // Add git branch if available
+          if (analysis.gitBranch) {
+            content += `**Git Branch**: \`${analysis.gitBranch}\`\n`;
+          }
+          
+          // Add time since last work
+          if (analysis.timeSinceLastWork) {
+            content += `**Last Work**: ${analysis.timeSinceLastWork}\n`;
+          }
+          
+          content += `\n---\n\n`;
+          
+          // Quick Start Section - immediate actions
+          content += `## ⚡ Quick Start\n\n`;
+          
+          if (analysis.mostRecentFile) {
+            const fileName = path.basename(analysis.mostRecentFile);
+            content += `**Primary Focus**: \`${fileName}\`\n\n`;
+            content += `This was the most recently edited file. Start here to continue your work.\n\n`;
+          }
+          
+          if (analysis.gitStatus) {
+            const { modified, untracked } = analysis.gitStatus;
+            if (modified.length > 0 || untracked.length > 0) {
+              content += `**Uncommitted Changes**:\n`;
+              if (modified.length > 0) {
+                content += `- ${modified.length} modified file${modified.length !== 1 ? 's' : ''}\n`;
+              }
+              if (untracked.length > 0) {
+                content += `- ${untracked.length} untracked file${untracked.length !== 1 ? 's' : ''}\n`;
+              }
+              content += `\nConsider committing or continuing work on these changes.\n\n`;
+            }
+          }
+          
+          if (analysis.todoItems.length > 0) {
+            const topTodo = analysis.todoItems[0];
+            content += `**Next TODO**: ${path.basename(topTodo.file)}:${topTodo.line} - ${topTodo.text}\n\n`;
+          }
+          
+          content += `---\n\n`;
+
+          // AI-Assisted vs Manual Changes
+          content += `## 🤖 File Changes\n\n`;
+
+          if (analysis.filesEditedByAI.length > 0) {
+            content += `### AI-Assisted (${analysis.filesEditedByAI.length} files)\n`;
+            analysis.filesEditedByAI.forEach(file => {
+              const fileName = path.basename(file);
+              content += `- \`${fileName}\`\n`;
+            });
+            content += '\n';
+          }
+
+          if (analysis.filesEditedManually.length > 0) {
+            content += `### Manual Changes (${analysis.filesEditedManually.length} files)\n`;
+            analysis.filesEditedManually.forEach(file => {
+              const fileName = path.basename(file);
+              content += `- \`${fileName}\`\n`;
+            });
+            content += '\n';
+          }
+
+          // Recent Changes
+          if (analysis.recentChanges.length > 0) {
+            content += `### Recent Activity\n`;
+            analysis.recentChanges.slice(0, 5).forEach(change => {
+              content += `- ${change.summary}\n`;
+            });
+            content += '\n';
+          }
+
+          content += `---\n\n`;
+
+          // TODOs
+          if (analysis.todoItems.length > 0) {
+            content += `## 📋 Outstanding TODOs\n\n`;
+            analysis.todoItems.slice(0, 5).forEach(todo => {
+              const emoji = todo.priority === 'high' ? '🔴' : todo.priority === 'medium' ? '🟡' : '🟢';
+              content += `${emoji} **${path.basename(todo.file)}:${todo.line}**\n`;
+              content += `   ${todo.text}\n\n`;
+            });
+            content += `---\n\n`;
+          }
+
+          // Recommendations
+          if (analysis.recommendations.length > 0) {
+            content += `## 💡 Recommendations\n\n`;
+            analysis.recommendations.forEach((rec, i) => {
+              content += `${i + 1}. ${rec}\n`;
+            });
+            content += `\n---\n\n`;
+          }
+
+          // Continuation Prompt
+          content += analysis.continuationPrompt;
+
+          content += `\n---\n`;
+          content += `*Auto-generated by FlowState. Edit to add more context.*\n`;
+
+          fs.writeFileSync(contextFilePath, content, 'utf-8');
+          console.log(`[IDE Restore] Regenerated context file with fresh analysis: ${contextFilePath}`);
+        } else if (session.contextFile) {
+          // If no analysis available, just append restore timestamp to existing file
+          const timestamp = new Date().toISOString();
+          const restoredContent = session.contextFile.content + `\n\n---\n**Restored**: ${timestamp}\n`;
+          fs.writeFileSync(contextFilePath, restoredContent, 'utf-8');
+          console.log(`[IDE Restore] Updated context file with restore timestamp: ${contextFilePath}`);
+        }
       } catch (err) {
         console.warn(`[IDE Restore] Could not restore context file:`, err);
       }
@@ -472,8 +683,15 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
       if (fs.existsSync(workspacePath)) {
         console.log(`[IDE Restore] Opening workspace: ${workspacePath}`);
 
+        // Check if context file exists to open it with the workspace
+        const contextFilePath = path.join(workspacePath, '.flowstate_context.md');
+        const shouldOpenContextFile = session.contextFile && fs.existsSync(contextFilePath);
+
+        // Build command to open workspace and optionally the context file
+        const fileArgs = shouldOpenContextFile ? ` "${contextFilePath}"` : '';
+
         if (process.platform === 'win32') {
-          await execPromise(`"${ideCommand}" "${workspacePath}"`).catch((err) => {
+          await execPromise(`"${ideCommand}" "${workspacePath}"${fileArgs}`).catch((err) => {
             console.warn(`[IDE Restore] Failed to open workspace with ${ideCommand}:`, err);
             // Try alternative: Use full path to executable
             const altPath = session.ideName === 'Cursor'
@@ -481,11 +699,15 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
               : path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Microsoft VS Code', 'Code.exe');
 
             if (fs.existsSync(altPath)) {
-              return execPromise(`"${altPath}" "${workspacePath}"`);
+              return execPromise(`"${altPath}" "${workspacePath}"${fileArgs}`);
             }
           });
         } else {
-          await execPromise(`${ideCommand} "${workspacePath}"`);
+          await execPromise(`${ideCommand} "${workspacePath}"${fileArgs}`);
+        }
+
+        if (shouldOpenContextFile) {
+          console.log(`[IDE Restore] ✓ Opened context file with workspace`);
         }
       } else {
         console.warn(`[IDE Restore] Workspace path no longer exists: ${workspacePath}`);

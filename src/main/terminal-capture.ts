@@ -48,6 +48,7 @@ export interface TerminalSession {
   powerShellVersion?: 'Classic' | 'Core'; // Whether it's powershell.exe (Classic) or pwsh.exe (Core)
   isWindowsTerminal?: boolean; // Whether this session is inside Windows Terminal
   ownCommandLine?: string; // The command line used to launch this terminal process
+  terminalOutput?: string; // Recent terminal output/scrollback buffer (for conversation capture)
 }
 
 export interface TerminalCaptureResult {
@@ -447,6 +448,16 @@ export async function captureTerminalSessions(): Promise<TerminalCaptureResult> 
       // Linux implementation
       logDebug('[Terminal Capture] Linux detected...');
       sessions.push(...await captureLinuxTerminals());
+    }
+
+    // Capture terminal output for all sessions (to get conversation history)
+    logDebug(`[Terminal Capture] Capturing terminal output for ${sessions.length} sessions...`);
+    for (const session of sessions) {
+      const terminalOutput = await captureTerminalOutput(session);
+      if (terminalOutput) {
+        session.terminalOutput = terminalOutput;
+        logDebug(`[Terminal Capture] Captured terminal output for session ${session.processId} (${terminalOutput.length} bytes)`);
+      }
     }
 
     // Capture Claude Code context for sessions that have Claude running
@@ -1625,6 +1636,183 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, defaultValue: T)
 }
 
 /**
+ * Attempt to capture recent terminal output/conversation
+ * This looks for PowerShell transcripts, Claude logs, etc.
+ */
+async function captureTerminalOutput(session: TerminalSession): Promise<string | undefined> {
+  try {
+    let output: string | undefined;
+
+    // Approach 1: Check for PowerShell transcript files (if user has transcription enabled)
+    if (session.shellType === 'PowerShell') {
+      try {
+        const transcriptDir = path.join(os.homedir(), 'Documents', 'PowerShell_transcript');
+        if (fs.existsSync(transcriptDir)) {
+          const transcriptFiles = fs.readdirSync(transcriptDir)
+            .filter(f => f.startsWith('PowerShell_transcript'))
+            .map(f => ({
+              name: f,
+              path: path.join(transcriptDir, f),
+              mtime: fs.statSync(path.join(transcriptDir, f)).mtime
+            }))
+            .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+          if (transcriptFiles.length > 0) {
+            // Read the most recent transcript (last 10KB only to avoid huge files)
+            const transcriptPath = transcriptFiles[0].path;
+            const stats = fs.statSync(transcriptPath);
+            const start = Math.max(0, stats.size - 10240); // Last 10KB
+            const buffer = Buffer.alloc(10240);
+            const fd = fs.openSync(transcriptPath, 'r');
+            fs.readSync(fd, buffer, 0, 10240, start);
+            fs.closeSync(fd);
+            output = buffer.toString('utf-8');
+            console.log(`Captured ${output.length} bytes from PowerShell transcript`);
+          }
+        }
+      } catch (err) {
+        // Transcript not available, continue to next approach
+      }
+    }
+
+    // Approach 2: Try to read recent command output using PowerShell's history
+    if (!output && session.processId) {
+      try {
+        // Use PowerShell to get console screen buffer if possible
+        // This is a best-effort attempt - may not work for all terminal types
+        const cmd = `powershell -NoProfile -NonInteractive -Command "& { $host.UI.RawUI.BufferSize | Out-Null; (Get-History -Count 10 | ForEach-Object { $_.CommandLine }) -join '\\n' }"`;
+        const result = execSync(cmd, { timeout: 2000, encoding: 'utf-8' }).trim();
+        if (result) {
+          output = result;
+          console.log(`Captured command history via PowerShell`);
+        }
+      } catch (err) {
+        // Not available
+      }
+    }
+
+    // Approach 3: Look for Claude CLI conversation logs/cache
+    // Claude Code might store conversation in various locations
+    const possibleLogLocations = [
+      path.join(os.homedir(), '.anthropic', 'logs'),
+      path.join(os.homedir(), '.claude', 'logs'),
+      path.join(os.homedir(), '.config', 'claude', 'logs'),
+      path.join(os.homedir(), 'AppData', 'Roaming', 'Claude', 'logs'),
+      path.join(os.homedir(), 'AppData', 'Local', 'Claude', 'logs'),
+    ];
+
+    for (const logDir of possibleLogLocations) {
+      if (!output && fs.existsSync(logDir)) {
+        try {
+          const logFiles = fs.readdirSync(logDir)
+            .map(f => ({
+              name: f,
+              path: path.join(logDir, f),
+              mtime: fs.statSync(path.join(logDir, f)).mtime
+            }))
+            .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+          if (logFiles.length > 0) {
+            // Read most recent log file (last 10KB)
+            const logPath = logFiles[0].path;
+            const stats = fs.statSync(logPath);
+            const start = Math.max(0, stats.size - 10240);
+            const buffer = Buffer.alloc(Math.min(10240, stats.size));
+            const fd = fs.openSync(logPath, 'r');
+            fs.readSync(fd, buffer, 0, buffer.length, start);
+            fs.closeSync(fd);
+            output = buffer.toString('utf-8');
+            console.log(`Captured ${output.length} bytes from Claude log file: ${logPath}`);
+            break;
+          }
+        } catch (err) {
+          // Log directory exists but couldn't read files
+        }
+      }
+    }
+
+    return output;
+  } catch (error) {
+    console.warn('Error capturing terminal output:', error);
+    return undefined;
+  }
+}
+
+/**
+ * Parse Claude Code conversation from terminal output
+ * Extracts the last 2-3 message exchanges (user questions + Claude responses)
+ */
+function parseClaudeConversation(terminalOutput: string): string {
+  try {
+    // Claude Code conversation format typically includes:
+    // - User messages (prefixed with ">", "You:", or just the question)
+    // - Claude responses (can be multi-line, often with tool uses)
+
+    const lines = terminalOutput.split('\n');
+    const messages: { type: 'user' | 'assistant'; content: string[] }[] = [];
+    let currentMessage: { type: 'user' | 'assistant'; content: string[] } | null = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      // Skip empty lines and prompts
+      if (!line || line.match(/^PS\s+/)) continue;
+
+      // Detect user message (questions, commands to Claude)
+      // Common patterns: lines that look like questions or commands
+      if (line.match(/^>/) || line.match(/^\?/) ||
+          (currentMessage?.type === 'assistant' && line.length > 10 && line.endsWith('?'))) {
+        // Start new user message
+        if (currentMessage) messages.push(currentMessage);
+        currentMessage = { type: 'user', content: [line.replace(/^>\s*/, '')] };
+      }
+      // Detect Claude's response (often starts with keywords or contains longer explanations)
+      else if (line.match(/^(I'll|Let me|I'm|I can|Based on|Looking at|Here|This|The)/i) ||
+               line.match(/<function_calls>/) ||
+               (currentMessage?.type === 'user' && line.length > 20)) {
+        // Start new assistant message
+        if (currentMessage) messages.push(currentMessage);
+        currentMessage = { type: 'assistant', content: [line] };
+      }
+      // Continue current message
+      else if (currentMessage && line.length > 0) {
+        currentMessage.content.push(line);
+      }
+    }
+
+    // Add the last message
+    if (currentMessage) messages.push(currentMessage);
+
+    // Extract last 2-3 exchanges (user + assistant pairs)
+    const exchanges: string[] = [];
+    let exchangeCount = 0;
+    for (let i = messages.length - 1; i >= 0 && exchangeCount < 3; i--) {
+      const msg = messages[i];
+      const content = msg.content.join('\n').substring(0, 500); // Limit to 500 chars per message
+
+      if (msg.type === 'user') {
+        exchanges.unshift(`**You:** ${content}`);
+        exchangeCount++;
+      } else {
+        exchanges.unshift(`**Claude:** ${content}`);
+      }
+
+      // Stop after 3 user messages
+      if (msg.type === 'user' && exchangeCount >= 3) break;
+    }
+
+    if (exchanges.length > 0) {
+      return exchanges.join('\n\n');
+    }
+
+    return '';
+  } catch (error) {
+    console.warn('Error parsing Claude conversation:', error);
+    return '';
+  }
+}
+
+/**
  * Capture Claude Code context if Claude Code is running
  */
 async function captureClaudeCodeContext(
@@ -1664,12 +1852,118 @@ async function captureClaudeCodeContext(
       return undefined;
     }
 
-    const cwd = session.currentDirectory;
+    let cwd = session.currentDirectory;
     if (!cwd) {
       return undefined;
     }
 
     console.log(`Detected Claude Code session in: ${cwd}`);
+
+    // SMART DIRECTORY DETECTION: If we're in the home directory, try to find the actual project directory
+    // Claude Code is likely running in a project directory, not the home directory
+    if (cwd === os.homedir() || cwd.toLowerCase() === os.homedir().toLowerCase()) {
+      console.log(`[Claude Context] Currently in home directory, searching for actual project directory...`);
+
+      // Method 1: Look for git repositories with recent commits/changes
+      const commonProjectDirs = [
+        path.join(os.homedir(), 'Desktop'),
+        path.join(os.homedir(), 'Documents'),
+        path.join(os.homedir(), 'Projects'),
+        path.join(os.homedir(), 'repos'),
+        path.join(os.homedir(), 'code'),
+        path.join(os.homedir(), 'dev'),
+      ];
+
+      for (const baseDir of commonProjectDirs) {
+        if (!fs.existsSync(baseDir)) continue;
+
+        try {
+          // Find all git repositories
+          const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+          const gitRepos = entries
+            .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+            .map(e => path.join(baseDir, e.name))
+            .filter(dir => {
+              try {
+                return fs.existsSync(path.join(dir, '.git'));
+              } catch {
+                return false;
+              }
+            });
+
+          // Check each git repo for recent activity
+          for (const gitRepo of gitRepos) {
+            try {
+              // Check if there are uncommitted changes (files in staging or worktree)
+              const { stdout: statusOutput } = await execPromise(
+                'git status --short',
+                { cwd: gitRepo, timeout: 2000 }
+              ).catch(() => ({ stdout: '' }));
+
+              if (statusOutput && statusOutput.trim()) {
+                // Has uncommitted changes - this is likely the active project!
+                console.log(`[Claude Context] Found git repository with uncommitted changes: ${gitRepo}`);
+                cwd = gitRepo;
+                break;
+              }
+
+              // Check last commit time
+              const { stdout: lastCommit } = await execPromise(
+                'git log -1 --format=%ct',
+                { cwd: gitRepo, timeout: 2000 }
+              ).catch(() => ({ stdout: '' }));
+
+              if (lastCommit && lastCommit.trim()) {
+                const commitTime = parseInt(lastCommit.trim()) * 1000; // Convert to milliseconds
+                const oneHourAgo = Date.now() - (60 * 60 * 1000);
+
+                if (commitTime > oneHourAgo) {
+                  console.log(`[Claude Context] Found git repository with recent commit: ${gitRepo}`);
+                  cwd = gitRepo;
+                  break;
+                }
+              }
+            } catch (e) {
+              // Skip repos we can't check
+            }
+          }
+
+          if (cwd !== os.homedir()) break; // Found a directory
+        } catch (e) {
+          // Skip directories we can't read
+        }
+      }
+
+      // Method 2: Check command history for cd commands
+      if (cwd === os.homedir() && session.commandHistory && session.commandHistory.length > 0) {
+        const cdCommand = session.commandHistory
+          .slice()
+          .reverse()
+          .find(cmd => cmd.trim().toLowerCase().startsWith('cd ') || cmd.trim().toLowerCase().startsWith('set-location'));
+
+        if (cdCommand) {
+          const match = cdCommand.match(/(?:cd|set-location)\s+["']?([^"']+)["']?/i);
+          if (match && match[1]) {
+            let targetDir = match[1].trim();
+
+            if (!path.isAbsolute(targetDir)) {
+              targetDir = path.resolve(os.homedir(), targetDir);
+            }
+
+            if (fs.existsSync(targetDir)) {
+              console.log(`[Claude Context] Found directory from command history: ${targetDir}`);
+              cwd = targetDir;
+            }
+          }
+        }
+      }
+
+      if (cwd !== os.homedir()) {
+        console.log(`[Claude Context] Detected actual working directory: ${cwd}`);
+      } else {
+        console.log(`[Claude Context] Could not detect project directory, using home directory`);
+      }
+    }
 
     // Extract the exact command used to start Claude Code
     let startupCommand = 'claude'; // Default fallback
@@ -1733,6 +2027,15 @@ async function captureClaudeCodeContext(
     console.log(`Claude Code context captured: ${recentFiles.length} recent files, ${projectFiles.length} project files`);
     console.log(`Claude Code startup command: ${startupCommand}`);
 
+    // Parse conversation from terminal output if available
+    let contextHint = '';
+    if (session.terminalOutput && session.terminalOutput.length > 0) {
+      contextHint = parseClaudeConversation(session.terminalOutput);
+      if (contextHint) {
+        console.log(`Parsed Claude Code conversation: ${contextHint.length} chars`);
+      }
+    }
+
     return {
       isClaudeCodeRunning: true,
       workingDirectory: cwd,
@@ -1740,7 +2043,7 @@ async function captureClaudeCodeContext(
       recentlyModifiedFiles: recentFiles,
       gitStatus,
       sessionStartTime: new Date(),
-      contextHint: '', // Will be populated by user input
+      contextHint: contextHint || '', // Parsed conversation or empty
       startupCommand,
       commandHistoryBeforeStart
     };
@@ -2090,6 +2393,144 @@ function generateClaudeContextFile(claude: ClaudeCodeContext): string {
   lines.push('**Working in:** `' + actualWorkingDir + '`');
   lines.push('');
 
+  // ============================================================================
+  // PREVIOUS CLAUDE CODE CONVERSATION - Show what they were asking/discussing
+  // ============================================================================
+  if (claude.contextHint && claude.contextHint.trim().length > 0) {
+    lines.push('## 💬 PREVIOUS CONVERSATION');
+    lines.push('');
+    lines.push('**What you were discussing with Claude before capture:**');
+    lines.push('');
+
+    // The contextHint might contain the last conversation context
+    lines.push(claude.contextHint);
+    lines.push('');
+  } else {
+    // Try to extract conversation from terminal output or command history
+    const commandHistory = claude.commandHistoryBeforeStart || [];
+
+    // Look for patterns that suggest what the user was working on
+    const workIndicators: string[] = [];
+
+    // Check for error-related commands (suggests debugging)
+    if (commandHistory.some(cmd => cmd.includes('grep') && (cmd.includes('error') || cmd.includes('Error')))) {
+      workIndicators.push('- You were **searching for errors** in the codebase');
+    }
+
+    // Check for test-related commands
+    if (commandHistory.some(cmd => cmd.includes('test') || cmd.includes('jest') || cmd.includes('vitest'))) {
+      workIndicators.push('- You were **running tests**');
+    }
+
+    // Check for git investigation
+    if (commandHistory.some(cmd => cmd.includes('git diff') || cmd.includes('git log'))) {
+      workIndicators.push('- You were **reviewing recent changes** with git');
+    }
+
+    // Check for file navigation/searching
+    if (commandHistory.some(cmd => cmd.includes('find') || cmd.includes('ls') || cmd.includes('dir'))) {
+      workIndicators.push('- You were **exploring the project structure**');
+    }
+
+    // Check for compilation/build
+    if (commandHistory.some(cmd => cmd.includes('compile') || cmd.includes('build') || cmd.includes('tsc'))) {
+      workIndicators.push('- You were **compiling/building** the project');
+    }
+
+    if (workIndicators.length > 0) {
+      lines.push('## 💬 RECENT ACTIVITY');
+      lines.push('');
+      lines.push('**Based on your terminal commands:**');
+      lines.push('');
+      workIndicators.forEach(indicator => lines.push(indicator));
+      lines.push('');
+    }
+  }
+
+  // ============================================================================
+  // PRECISE WORK LOCATION - Show EXACTLY where they were working
+  // ============================================================================
+  if (modifiedFiles.length > 0) {
+    lines.push('## 🎯 EXACT WORK LOCATION');
+    lines.push('');
+
+    try {
+      // Get git diff to find which lines were changed
+      const diffOutput = execSync(`git diff --unified=5 -- "${modifiedFiles[0]}"`, {
+        cwd: actualWorkingDir,
+        encoding: 'utf-8',
+        timeout: 3000
+      }).trim();
+
+      if (diffOutput) {
+        // Parse diff to find changed line numbers
+        const hunkMatches = diffOutput.matchAll(/@@ -(\d+),?\d* \+(\d+),?\d* @@/g);
+        const changedLines: number[] = [];
+
+        for (const match of hunkMatches) {
+          changedLines.push(parseInt(match[2])); // New line number
+        }
+
+        if (changedLines.length > 0) {
+          const primaryFile = modifiedFiles[0];
+          const lineNum = changedLines[0]; // First changed line
+
+          // Read the file and extract 5 lines around the change
+          const fullPath = path.join(actualWorkingDir, primaryFile);
+          const fileContent = fs.readFileSync(fullPath, 'utf-8');
+          const fileLines = fileContent.split('\n');
+
+          const startLine = Math.max(0, lineNum - 3);
+          const endLine = Math.min(fileLines.length, lineNum + 2);
+          const codeSnippet = fileLines.slice(startLine, endLine);
+
+          // Describe what they were doing
+          lines.push(`**You were working on line ${lineNum} of \`${primaryFile}\`**`);
+          lines.push('');
+
+          // Analyze the change to describe it
+          const addedLines = diffOutput.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++'));
+          const removedLines = diffOutput.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---'));
+
+          if (addedLines.length > removedLines.length) {
+            lines.push(`You were **adding functionality** (${addedLines.length} new lines).`);
+          } else if (removedLines.length > addedLines.length) {
+            lines.push(`You were **removing/refactoring code** (${removedLines.length} lines removed).`);
+          } else {
+            lines.push(`You were **modifying existing code** (${addedLines.length} lines changed).`);
+          }
+          lines.push('');
+
+          // Show the code context
+          lines.push('**Code at this location:**');
+          lines.push('```typescript');
+          codeSnippet.forEach((line, idx) => {
+            const actualLineNum = startLine + idx + 1;
+            const marker = actualLineNum === lineNum ? ' ← YOU WERE HERE' : '';
+            lines.push(`${actualLineNum}: ${line}${marker}`);
+          });
+          lines.push('```');
+          lines.push('');
+
+          // Infer what they were trying to do based on code analysis
+          const lastAddedLine = addedLines[addedLines.length - 1]?.substring(1).trim() || '';
+          if (lastAddedLine.includes('TODO')) {
+            lines.push(`📝 **Note:** You left a TODO comment, suggesting this work is incomplete.`);
+          } else if (lastAddedLine.includes('async') || lastAddedLine.includes('await')) {
+            lines.push(`⏳ **Context:** You were working with asynchronous code - check if error handling is complete.`);
+          } else if (lastAddedLine.includes('try') || lastAddedLine.includes('catch')) {
+            lines.push(`🛡️ **Context:** You were adding error handling - verify all edge cases are covered.`);
+          }
+          lines.push('');
+        }
+      }
+    } catch (e) {
+      // Git diff failed, fall back to basic description
+      lines.push(`You were modifying **${modifiedFiles[0]}**`);
+      lines.push('');
+    }
+  }
+
   lines.push('## ⚡ WHAT TO DO NOW');
   lines.push('');
   lines.push('**Ask the user which of the following they\'d like to do:**');
@@ -2404,6 +2845,18 @@ function generateClaudeContextFile(claude: ClaudeCodeContext): string {
 function createStartupScript(session: TerminalSession): string | null {
   const commands: string[] = [];
 
+  // DEBUG: Log what we received
+  console.log('[DEBUG createStartupScript] Creating startup script for session:');
+  console.log('[DEBUG createStartupScript]   processId:', session.processId);
+  console.log('[DEBUG createStartupScript]   shellType:', session.shellType);
+  console.log('[DEBUG createStartupScript]   currentDirectory:', session.currentDirectory);
+  console.log('[DEBUG createStartupScript]   has claudeCodeContext:', !!session.claudeCodeContext);
+  if (session.claudeCodeContext) {
+    console.log('[DEBUG createStartupScript]   claudeCodeContext.isClaudeCodeRunning:', session.claudeCodeContext.isClaudeCodeRunning);
+    console.log('[DEBUG createStartupScript]   claudeCodeContext.workingDirectory:', session.claudeCodeContext.workingDirectory);
+    console.log('[DEBUG createStartupScript]   claudeCodeContext.projectFiles count:', session.claudeCodeContext.projectFiles?.length || 0);
+  }
+
   // Change to working directory if available
   if (session.currentDirectory) {
     if (session.shellType === 'PowerShell') {
@@ -2465,32 +2918,207 @@ function createStartupScript(session: TerminalSession): string | null {
       }
 
       // Print context information before restarting Claude
-      commands.push('# Session context has been saved to:');
+      // Generate a DETAILED summary for terminal output
+      const modifiedFiles = claude.gitStatus?.modifiedFiles || [];
+      const recentFiles = claude.recentlyModifiedFiles || [];
+      const workingDir = claude.workingDirectory || session.currentDirectory || process.cwd();
+
+      // Extract detailed work context
+      let workDescription = '';
+      let fileContext = '';
+      let lineContext = '';
+      let workType = '';
+      let recommendations: string[] = [];
+
+      if (modifiedFiles.length > 0) {
+        try {
+          // Get git diff for the primary file to extract exact location
+          const primaryFile = modifiedFiles[0];
+          const diffOutput = execSync(`git diff --unified=3 -- "${primaryFile}"`, {
+            cwd: workingDir,
+            encoding: 'utf-8',
+            timeout: 3000
+          }).trim();
+
+          if (diffOutput) {
+            // Parse diff to find changed line numbers
+            const hunkMatch = diffOutput.match(/@@ -(\d+),?\d* \+(\d+),?\d* @@/);
+            if (hunkMatch) {
+              const lineNum = parseInt(hunkMatch[2]);
+              lineContext = `line ${lineNum}`;
+
+              // Analyze what type of work was being done
+              const addedLines = diffOutput.split('\n').filter(l => l.startsWith('+') && !l.startsWith('+++')).length;
+              const removedLines = diffOutput.split('\n').filter(l => l.startsWith('-') && !l.startsWith('---')).length;
+
+              if (addedLines > removedLines * 2) {
+                workType = 'adding new functionality';
+              } else if (removedLines > addedLines * 2) {
+                workType = 'removing/refactoring code';
+              } else {
+                workType = 'modifying existing code';
+              }
+
+              // Check for specific patterns
+              const lastAddedLines = diffOutput.split('\n').filter(l => l.startsWith('+')).slice(-3).join(' ');
+              if (lastAddedLines.includes('TODO')) {
+                recommendations.push('Complete the TODO item');
+              }
+              if (lastAddedLines.includes('async') || lastAddedLines.includes('await')) {
+                recommendations.push('Check async error handling');
+              }
+              if (lastAddedLines.includes('console.log') || lastAddedLines.includes('console.error')) {
+                recommendations.push('Remove debug logs before commit');
+              }
+            }
+          }
+
+          // Build file context
+          if (modifiedFiles.length === 1) {
+            fileContext = `${primaryFile}`;
+          } else if (modifiedFiles.length <= 3) {
+            fileContext = `${primaryFile} and ${modifiedFiles.length - 1} other file(s)`;
+          } else {
+            fileContext = `${primaryFile} and ${modifiedFiles.length - 1} other files`;
+          }
+
+          // Build work description
+          if (workType && lineContext) {
+            workDescription = `You were ${workType} in ${fileContext} (${lineContext})`;
+          } else {
+            workDescription = `You were editing ${fileContext}`;
+          }
+
+        } catch (e) {
+          // Fallback if git diff fails
+          workDescription = `You were editing ${modifiedFiles.length} file(s)`;
+          fileContext = modifiedFiles.slice(0, 2).join(', ');
+        }
+
+        // Add generic recommendations
+        if (recommendations.length === 0) {
+          recommendations.push('Review uncommitted changes');
+          recommendations.push('Run tests if applicable');
+        }
+      } else if (recentFiles.length > 0) {
+        workDescription = `You were working in ${path.basename(workingDir)}`;
+        recommendations.push('Continue your previous work');
+      } else {
+        workDescription = 'Session recovery';
+        recommendations.push('Review context to decide next steps');
+      }
+
+      commands.push('# Session context has been saved!');
       if (session.shellType === 'PowerShell') {
-        commands.push(`Write-Host "Context File: ${contextFilePath.replace(/\\/g, '\\\\')}" -ForegroundColor Cyan`);
         commands.push('Write-Host "" ');
-        commands.push('Write-Host "When Claude Code starts, you can ask it to:" -ForegroundColor Yellow');
-        commands.push(`Write-Host "  'Read ${contextFilePath.replace(/\\/g, '\\\\')} and continue where we left off'" -ForegroundColor Green`);
+        commands.push('Write-Host "============================================================" -ForegroundColor Cyan');
+        commands.push('Write-Host "FLOWSTATE SESSION RECOVERY" -ForegroundColor Yellow');
+        commands.push('Write-Host "============================================================" -ForegroundColor Cyan');
+        commands.push('Write-Host "" ');
+        commands.push(`Write-Host "Project: ${path.basename(workingDir)}" -ForegroundColor White`);
+        commands.push(`Write-Host "Work Location: ${workDescription}" -ForegroundColor Gray`);
+        if (fileContext) {
+          commands.push(`Write-Host "Files Modified: ${fileContext}" -ForegroundColor Gray`);
+        }
+        commands.push('Write-Host "" ');
+        if (recommendations.length > 0) {
+          commands.push('Write-Host "Suggested Next Steps:" -ForegroundColor Yellow');
+          recommendations.slice(0, 3).forEach((rec, idx) => {
+            commands.push(`Write-Host "  ${idx + 1}. ${rec}" -ForegroundColor Gray`);
+          });
+          commands.push('Write-Host "" ');
+        }
+        commands.push('Write-Host "COPY THIS PROMPT FOR CLAUDE:" -ForegroundColor Yellow');
+        commands.push('Write-Host "------------------------------------------------------------" -ForegroundColor DarkGray');
+        commands.push(`Write-Host 'Read ${contextFilePath} and continue where we left off. ${workDescription}. Review the full context and ask me which option I would like to pursue.' -ForegroundColor Green`);
+        commands.push('Write-Host "------------------------------------------------------------" -ForegroundColor DarkGray');
+        commands.push('Write-Host "" ');
+        commands.push(`Write-Host 'Full context saved to: ${contextFilePath}' -ForegroundColor DarkGray`);
         commands.push('Write-Host "" ');
       } else {
-        commands.push(`echo "Context File: ${contextFilePath}"`);
         commands.push(`echo ""`);
-        commands.push(`echo "When Claude Code starts, you can ask it to:"`);
-        commands.push(`echo "  'Read ${contextFilePath} and continue where we left off'"`);
+        commands.push(`echo "============================================================"`);
+        commands.push(`echo "FLOWSTATE SESSION RECOVERY"`);
+        commands.push(`echo "============================================================"`);
+        commands.push(`echo ""`);
+        commands.push(`echo "Project: ${path.basename(workingDir)}"`);
+        commands.push(`echo "Work Location: ${workDescription}"`);
+        if (fileContext) {
+          commands.push(`echo "Files Modified: ${fileContext}"`);
+        }
+        commands.push(`echo ""`);
+        if (recommendations.length > 0) {
+          commands.push(`echo "Suggested Next Steps:"`);
+          recommendations.slice(0, 3).forEach((rec, idx) => {
+            commands.push(`echo "  ${idx + 1}. ${rec}"`);
+          });
+          commands.push(`echo ""`);
+        }
+        commands.push(`echo "COPY THIS PROMPT FOR CLAUDE:"`);
+        commands.push(`echo "------------------------------------------------------------"`);
+        commands.push(`echo "Read ${contextFilePath} and continue where we left off. ${workDescription}. Review the full context and ask me which option I would like to pursue."`);
+        commands.push(`echo "------------------------------------------------------------"`);
+        commands.push(`echo ""`);
+        commands.push(`echo "Full context saved to: ${contextFilePath}"`);
         commands.push(`echo ""`);
       }
       commands.push('');
 
-      commands.push('# Restarting Claude Code session...');
+      // Pause to let user read context and copy the prompt before launching Claude
+      if (session.shellType === 'PowerShell') {
+        commands.push('Write-Host "" ');
+        commands.push('Write-Host "============================================================" -ForegroundColor Yellow');
+        commands.push('Write-Host "IMPORTANT: Review the context above and decide what to do." -ForegroundColor Yellow');
+        commands.push('Write-Host "Copy the green prompt above BEFORE pressing Enter." -ForegroundColor Yellow');
+        commands.push('Write-Host "You will paste it into Claude Code once it starts." -ForegroundColor Yellow');
+        commands.push('Write-Host "============================================================" -ForegroundColor Yellow');
+        commands.push('Write-Host "" ');
+        commands.push('Read-Host "Press Enter when you have copied the prompt and are ready to launch Claude Code"');
+        commands.push('Write-Host "" ');
+      } else {
+        commands.push('echo ""');
+        commands.push('echo "============================================================"');
+        commands.push('echo "IMPORTANT: Review the context above and decide what to do."');
+        commands.push('echo "Copy the prompt above BEFORE pressing Enter."');
+        commands.push('echo "You will paste it into Claude Code once it starts."');
+        commands.push('echo "============================================================"');
+        commands.push('echo ""');
+        commands.push('read -p "Press Enter when you have copied the prompt and are ready to launch Claude Code: "');
+        commands.push('echo ""');
+      }
+
+      commands.push('# Launching Claude Code session...');
       const startup = claude.startupCommand?.trim() || 'claude code';
-      commands.push(startup);
+
+      if (session.shellType === 'PowerShell') {
+        // Use PowerShell background job to auto-press Enter after Claude prompts
+        commands.push('$job = Start-Job -ScriptBlock {');
+        commands.push('  Start-Sleep -Milliseconds 1500');
+        commands.push('  Add-Type -AssemblyName System.Windows.Forms');
+        commands.push("  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')");
+        commands.push('}');
+        commands.push(startup);
+      } else {
+        commands.push(startup);
+      }
       commands.push('');
     } catch (err) {
       // Fallback if context file creation fails
       console.warn('Failed to create Claude context file:', err);
-      commands.push('# Restarting Claude Code session...');
+      commands.push('# Restarting Claude Code session with auto-confirmation...');
       const startup = claude.startupCommand?.trim() || 'claude code';
-      commands.push(startup);
+
+      if (session.shellType === 'PowerShell') {
+        // Use PowerShell background job to auto-press Enter after Claude prompts
+        commands.push('$job = Start-Job -ScriptBlock {');
+        commands.push('  Start-Sleep -Milliseconds 1500');
+        commands.push('  Add-Type -AssemblyName System.Windows.Forms');
+        commands.push("  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')");
+        commands.push('}');
+        commands.push(startup);
+      } else {
+        commands.push(startup);
+      }
       commands.push('');
     }
   }
@@ -2586,8 +3214,8 @@ function createStartupScript(session: TerminalSession): string | null {
         commands.push(`# Restarting ${cmd.processName || 'process'}...`);
         // Use Invoke-Expression for PowerShell to properly handle command-line arguments with -- flags
         if (session.shellType === 'PowerShell') {
-          // Escape single quotes in the command line for PowerShell
-          const escapedCmd = commandLine.replace(/'/g, "''");
+          // Escape quotes for PowerShell: single quotes for the outer string, backtick-doublequote for inner quotes
+          const escapedCmd = commandLine.replace(/'/g, "''").replace(/"/g, '`' + '"');
           commands.push(`Invoke-Expression '${escapedCmd}'`);
         } else {
           commands.push(commandLine);

@@ -11,6 +11,11 @@
 - [x] Add `parentName` and `parentCommandLine` to session metadata
 - [x] Implement restoration order: Terminal → Claude Code → Visual Assets
 - [x] Add Claude Code process detection/waiting logic
+- [x] **Fix terminal recovery and Claude Code reinitialization issue** ✅ FIXED (2025-12-10)
+  - **Issue**: PowerShell startup script had Unicode box-drawing characters (═══, ───) causing parsing errors
+  - **Error**: "The string is missing the terminator" at script line 65
+  - **Fix**: Replaced Unicode characters with ASCII equivalents (===, ---)
+  - **Result**: Terminal recovery now works correctly, displays recovery banner
 - [ ] **Test end-to-end flow**: Capture → Close → Restore → Verify Claude Code launches immediately
 - [ ] **Test visual assets**: Verify browsers/Electron apps open AFTER Claude Code initializes
 - [ ] **Test context file**: Verify Claude Code receives context restoration file
@@ -33,21 +38,23 @@
 ## 💻 Priority 2: IDE Integration & Capture
 
 ### 2.1 IDE Detection & Capture
-- [ ] **Cursor IDE**
-  - [ ] Detect running Cursor instances
-  - [ ] Capture workspace path
-  - [ ] Capture open files/tabs
-  - [ ] Capture split pane layouts
-  - [ ] Capture AI chat history (if accessible)
-  - [ ] Restore with same workspace and files
+- [x] **Cursor IDE** ✅ COMPLETED
+  - [x] Detect running Cursor instances
+  - [x] Capture workspace path
+  - [x] Capture open files/tabs
+  - [x] Capture context file generation with workspace analysis
+  - [x] Restore with same workspace and files
+  - [ ] Capture split pane layouts (nice-to-have)
+  - [ ] Capture AI chat history (if accessible) (nice-to-have)
 
-- [ ] **VS Code**
-  - [ ] Detect running VS Code instances
-  - [ ] Capture workspace path
-  - [ ] Capture open files/tabs
-  - [ ] Capture extensions state
-  - [ ] Capture split pane layouts
-  - [ ] Restore with same workspace and files
+- [x] **VS Code** ✅ COMPLETED
+  - [x] Detect running VS Code instances
+  - [x] Capture workspace path
+  - [x] Capture open files/tabs
+  - [x] Capture context file generation with workspace analysis
+  - [x] Restore with same workspace and files
+  - [ ] Capture extensions state (nice-to-have)
+  - [ ] Capture split pane layouts (nice-to-have)
 
 - [ ] **Windsurf**
   - [ ] Research Windsurf process detection
@@ -76,10 +83,10 @@
 ## 🎯 Priority 3: User Experience
 
 ### 3.1 App Startup Walkthrough/Onboarding
-- [ ] **Fix walkthrough trigger**: Only show on FIRST sign-in after new account registration
-  - Current issue: Shows every time user signs in
-  - Need to add `hasCompletedOnboarding` flag to user database
-  - Set flag to `true` after completing tour OR skipping
+- [x] **Fix walkthrough trigger**: Only show on FIRST sign-in after new account registration ✅ COMPLETED
+  - Fixed: Now uses `just_completed_onboarding` sessionStorage flag
+  - Tour only shows once after completing onboarding, not on every login
+  - Flag is cleared after tour is shown or if tour was already completed
 - [ ] Add "Skip Tour" button to onboarding
 - [ ] Add "Restart Tour" option in settings
 - [ ] Improve tour steps with better visuals/animations

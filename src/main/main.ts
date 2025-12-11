@@ -46,12 +46,54 @@ if (typeof process !== 'undefined') {
   }
 }
 
-import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, ipcMain, powerMonitor, dialog } from 'electron';
+import * as Sentry from '@sentry/electron/main';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initDatabase } from './database.js';
 import { captureWorkspace } from './capture.js';
 import { restoreWorkspace, restoreAsset } from './restore.js';
+
+// Initialize Sentry for crash reporting
+// Only in production mode to avoid noise during development
+if (app.isPackaged) {
+  Sentry.init({
+    dsn: 'https://d0e9ee43d42f56509f21f1feea1eaa16@o4510468375773184.ingest.us.sentry.io/4510468384751617',
+    environment: 'production',
+    // Privacy-first: Filter out sensitive data before sending
+    beforeSend(event) {
+      // Remove file paths from error messages
+      if (event.exception) {
+        event.exception.values?.forEach(value => {
+          if (value.value) {
+            // Replace Windows paths: C:\Users\... -> [PATH]
+            value.value = value.value.replace(/[A-Z]:\\[^\s]+/g, '[PATH]');
+            // Replace Unix paths: /home/user/... -> [PATH]
+            value.value = value.value.replace(/\/[^\s]+/g, '[PATH]');
+          }
+          // Remove file paths from stack traces
+          if (value.stacktrace?.frames) {
+            value.stacktrace.frames.forEach(frame => {
+              if (frame.filename) {
+                frame.filename = frame.filename.replace(/[A-Z]:\\[^\s]+/g, '[PATH]');
+                frame.filename = frame.filename.replace(/\/[^\s]+/g, '[PATH]');
+              }
+            });
+          }
+        });
+      }
+      // Remove sensitive breadcrumbs (user actions with file paths)
+      if (event.breadcrumbs) {
+        event.breadcrumbs = event.breadcrumbs.filter(breadcrumb => {
+          // Keep only error and navigation breadcrumbs
+          return breadcrumb.category === 'error' || breadcrumb.category === 'navigation';
+        });
+      }
+      return event;
+    },
+  });
+  console.log('[Sentry] Initialized for production error tracking');
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -80,6 +122,126 @@ function initializePowerMonitor() {
   powerMonitor.on('on-battery', () => broadcastPowerStatus('battery'));
   powerMonitor.on('on-ac', () => broadcastPowerStatus('ac'));
 }
+
+/**
+ * Security: Safely load localhost URLs in development mode only
+ * Validates that the URL is actually localhost to prevent loading external resources
+ * Note: HTTP is acceptable for localhost in development as traffic never leaves the machine
+ */
+function safeLoadLocalhost(window: BrowserWindow, url: string): Promise<void> {
+  try {
+    const parsedUrl = new URL(url);
+    // Validate this is actually localhost/127.0.0.1
+    if (parsedUrl.hostname !== 'localhost' && parsedUrl.hostname !== '127.0.0.1') {
+      throw new Error(`Security: Attempted to load non-localhost URL: ${url}`);
+    }
+    // Validate protocol is http (https would require certs for localhost)
+    if (parsedUrl.protocol !== 'http:') {
+      throw new Error(`Security: Invalid protocol for localhost: ${parsedUrl.protocol}`);
+    }
+    return window.loadURL(url);
+  } catch (error) {
+    safeError('[Security] Failed to validate or load localhost URL:', error);
+    throw error;
+  }
+}
+
+/**
+ * Set up background task to automatically capture when a new day session is created
+ * This ensures new sessions created at midnight get automatically populated
+ */
+async function setupNewDayAutoCapture() {
+  // Track which sessions we've already attempted to auto-capture to avoid duplicates
+  const autoCapturedSessions = new Set<number>();
+  
+  // Check every 5 minutes if we need to capture for a new day session
+  setInterval(async () => {
+    try {
+      const { prepare, getAllSettings } = await import('./database.js');
+      const { getCurrentWorkSession } = await import('./session-management.js');
+      const { captureWorkspace } = await import('./capture.js');
+      
+      // Get all active users
+      const users = prepare('SELECT id FROM users').all() as { id: number }[];
+      
+      for (const user of users) {
+        const userId = user.id;
+        
+        // Get user settings to check if auto-save is enabled
+        const userSettings = getAllSettings(userId);
+        const autoSaveEnabled = userSettings.autoSaveEnabled === 'true';
+        
+        // Only auto-capture if user has auto-save enabled
+        if (!autoSaveEnabled) {
+          continue;
+        }
+        
+        // Get current session (will create new one if it's a new day)
+        const currentSession = getCurrentWorkSession(userId);
+        
+        // Skip if we've already auto-captured this session
+        if (autoCapturedSessions.has(currentSession.id)) {
+          continue;
+        }
+        
+        // Check if this session was created today and has no captures
+        const userTimezone = userSettings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const now = new Date();
+        const todayInUserTz = new Intl.DateTimeFormat('en-CA', {
+          timeZone: userTimezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(now);
+        
+        // Parse session created_at date
+        const sessionCreatedAt = currentSession.created_at;
+        let sessionDate: Date;
+        if (sessionCreatedAt.includes('Z') || sessionCreatedAt.match(/[+-]\d{2}:?\d{2}$/)) {
+          sessionDate = new Date(sessionCreatedAt);
+        } else {
+          const utcString = sessionCreatedAt.replace(' ', 'T') + 'Z';
+          sessionDate = new Date(utcString);
+        }
+        
+        const sessionDateInUserTz = new Intl.DateTimeFormat('en-CA', {
+          timeZone: userTimezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(sessionDate);
+        
+        // Check if session is from today and has no captures
+        if (sessionDateInUserTz === todayInUserTz) {
+          const captureCount = prepare(`
+            SELECT COUNT(*) as count 
+            FROM captures 
+            WHERE session_id = ? AND archived = 0
+          `).get(currentSession.id) as { count: number } | null;
+          
+          if (captureCount && captureCount.count === 0) {
+            // New day session with no captures - trigger automatic capture
+            safeLog(`[Main] New day session ${currentSession.id} detected with no captures, triggering automatic capture...`);
+            autoCapturedSessions.add(currentSession.id);
+            
+            try {
+              await captureWorkspace(undefined, userId, currentSession.id);
+              safeLog(`[Main] Automatic capture completed for new day session ${currentSession.id}`);
+            } catch (error) {
+              safeError(`[Main] Failed to automatically capture for new day session:`, error);
+              // Remove from set so we can retry later
+              autoCapturedSessions.delete(currentSession.id);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      // Don't let background task errors crash the app
+      safeError('[Main] Error in new day auto-capture check:', error);
+    }
+  }, 5 * 60 * 1000); // Check every 5 minutes
+}
+
 
 // Safe logging functions that catch EPIPE errors (broken pipe when stdout/stderr are closed)
 // EPIPE errors occur when writing to closed stdout/stderr streams in Electron
@@ -115,6 +277,74 @@ function safeLog(...args: any[]): void {
   }
 }
 
+/**
+ * Wait for Vite dev server to be ready
+ */
+async function waitForViteServer(maxAttempts: number = 10, delayMs: number = 1000): Promise<number> {
+  const http = await import('http');
+  const ports = [5173, 5174, 5175, 5176, 5177]; // Try common Vite ports
+  
+  // Show a message in the loading page after 3 seconds if Vite isn't found
+  let messageShown = false;
+  const messageTimeout = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.executeJavaScript(`
+        const p = document.querySelector('p');
+        if (p) {
+          p.textContent = 'Waiting for Vite dev server to start...';
+          p.style.color = '#ffa500';
+        }
+      `).catch(() => {});
+      messageShown = true;
+    }
+  }, 3000);
+  
+  try {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      for (const port of ports) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const req = http.get(`http://localhost:${port}`, (res) => {
+              res.on('data', () => {});
+              res.on('end', () => {
+                resolve();
+              });
+            });
+            req.on('error', (err) => {
+              reject(err);
+            });
+            req.setTimeout(2000, () => {
+              req.destroy();
+              reject(new Error('Request timeout'));
+            });
+          });
+          clearTimeout(messageTimeout);
+          safeLog(`[Main] Vite server is ready on port ${port} (attempt ${attempt}/${maxAttempts})`);
+          return port; // Success! Return the port number
+        } catch (error) {
+          // Try next port
+          continue;
+        }
+      }
+      
+      if (attempt < maxAttempts) {
+        if (attempt % 5 === 0 || attempt <= 3) {
+          safeLog(`[Main] Waiting for Vite server... (attempt ${attempt}/${maxAttempts})`);
+        }
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      } else {
+        clearTimeout(messageTimeout);
+        throw new Error(`Vite server not available on any port after ${maxAttempts} attempts`);
+      }
+    }
+    clearTimeout(messageTimeout);
+    throw new Error('Vite server not found');
+  } catch (error) {
+    clearTimeout(messageTimeout);
+    throw error;
+  }
+}
+
 function safeError(...args: any[]): void {
   try {
     const message = args.map(arg => 
@@ -145,6 +375,8 @@ function safeError(...args: any[]): void {
 }
 
 function createWindow() {
+  const isDev = !app.isPackaged;
+
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -155,17 +387,127 @@ function createWindow() {
       preload: path.join(__dirname, 'preload/preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true, // Security: Enable sandbox for renderer process
+      webSecurity: !isDev, // Only disable in development for localhost
+      allowRunningInsecureContent: false,
     },
-    show: false, // Don't show until ready
+    show: true, // Show immediately so user can see what's happening
+  });
+
+  // Security: Set strict CSP headers based on environment
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    const csp = isDev
+      ? // Development: Allow unsafe-inline, unsafe-eval, and unsafe-hashes for Vite HMR
+        "default-src 'self'; " +
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " + // Required for Vite HMR
+        "style-src 'self' 'unsafe-inline' 'unsafe-hashes' https://fonts.googleapis.com; " + // unsafe-hashes for event handler styles
+        "font-src 'self' https://fonts.gstatic.com; " +
+        "img-src 'self' data: https:; " +
+        "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com ws://localhost:* http://localhost:* https://o4510468375773184.ingest.us.sentry.io; " +
+        "object-src 'none'; " +
+        "base-uri 'self'; " +
+        "form-action 'self';"
+      : // Production: Strict CSP without unsafe-eval or unsafe-inline
+        "default-src 'self'; " +
+        "script-src 'self'; " +
+        "style-src 'self' https://fonts.googleapis.com; " +
+        "font-src 'self' https://fonts.gstatic.com; " +
+        "img-src 'self' data: https:; " +
+        "connect-src 'self' https://o4510468375773184.ingest.us.sentry.io; " +
+        "object-src 'none'; " +
+        "base-uri 'self'; " +
+        "form-action 'self';";
+
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp]
+      }
+    });
+  });
+
+  // Force window to be visible immediately
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+    safeLog('[Main] Window created and shown immediately');
+  }
+
+  // Security: Limit navigation to prevent opening untrusted URLs
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    const parsedUrl = new URL(navigationUrl);
+    const allowedHosts = ['localhost', '127.0.0.1'];
+
+    // Allow navigation to localhost in dev mode only
+    if (isDev && allowedHosts.includes(parsedUrl.hostname)) {
+      return; // Allow navigation
+    }
+
+    // Block all other navigation attempts
+    event.preventDefault();
+    safeLog(`[Security] Blocked navigation to: ${navigationUrl}`);
+  });
+
+  // Security: Control new window creation
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const parsedUrl = new URL(url);
+    const allowedHosts = ['localhost', '127.0.0.1'];
+
+    // In dev mode, allow localhost windows
+    if (isDev && allowedHosts.includes(parsedUrl.hostname)) {
+      return { action: 'allow' };
+    }
+
+    // Block all new window attempts - use shell.openExternal for external URLs instead
+    safeLog(`[Security] Blocked new window for: ${url}`);
+    return { action: 'deny' };
+  });
+
+  // Security: Set permission request handler to control dangerous permissions
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    const allowedPermissions = ['clipboard-read', 'clipboard-sanitized-write'];
+
+    if (allowedPermissions.includes(permission)) {
+      callback(true); // Allow safe permissions
+    } else {
+      safeLog(`[Security] Denied permission request: ${permission}`);
+      callback(false); // Deny all other permissions (camera, microphone, geolocation, etc.)
+    }
+  });
+
+  // Security: Handle frame navigation (including middle-click/auxclick events)
+  // This prevents middle-click from navigating frames to untrusted origins
+  mainWindow.webContents.on('did-frame-navigate', (event, url, httpResponseCode, httpStatusText, isMainFrame) => {
+    // Only check non-main-frame navigations (iframes, etc.)
+    if (!isMainFrame) {
+      try {
+        const parsedUrl = new URL(url);
+        const allowedHosts = ['localhost', '127.0.0.1'];
+
+        // In dev mode, allow localhost frame navigation
+        if (isDev && allowedHosts.includes(parsedUrl.hostname)) {
+          return; // Allow
+        }
+
+        // Log suspicious frame navigation (we can't prevent it after it happened, but we can detect it)
+        if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
+          safeLog(`[Security] Frame navigated to external URL: ${url}`);
+        }
+      } catch (error) {
+        safeLog(`[Security] Invalid URL in frame navigation: ${url}`);
+      }
+    }
   });
 
   // Load the app
   // In development, load from Vite dev server
-  const isDev = !app.isPackaged;
 
+  // Ensure window is always visible
   mainWindow.once('ready-to-show', () => {
     if (mainWindow) {
       mainWindow.show();
+      mainWindow.focus();
+      safeLog('[Main] Window shown after ready-to-show event');
     }
   });
 
@@ -180,6 +522,28 @@ function createWindow() {
   
   // Make logToRenderer available globally for other modules
   (global as any).logToRenderer = logToRenderer;
+  
+  // Helper to send restore progress updates
+  function sendRestoreProgress(message: string) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('restore-progress', message);
+    }
+  }
+  
+  // Make sendRestoreProgress available globally
+  (global as any).sendRestoreProgress = sendRestoreProgress;
+  
+  // Connect the logger to forward logs to renderer when window is ready
+  mainWindow.webContents.once('did-finish-load', async () => {
+    try {
+      const { logger } = await import('./utils/logger.js');
+      logger.setRendererLogger((message: string) => {
+        logToRenderer(message);
+      });
+    } catch (error) {
+      // Logger might not be available yet, that's okay
+    }
+  });
 
   // Broadcast current power status to renderer whenever window is ready
   if (powerStatus !== 'unknown') {
@@ -189,16 +553,57 @@ function createWindow() {
   }
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    safeError('Failed to load page:', errorCode, errorDescription);
+    safeError('[Main] Failed to load page:', errorCode, errorDescription);
     if (mainWindow) {
       mainWindow.show(); // Show window even if load failed
+      
+      // Show error message in window
+      const errorHtml = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>FlowState - Load Error</title>
+          <style>
+            body {
+              margin: 0;
+              padding: 40px;
+              font-family: system-ui, -apple-system, sans-serif;
+              background: #1A1A1D;
+              color: #ffffff;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              min-height: 100vh;
+            }
+            .error-container {
+              max-width: 600px;
+              text-align: center;
+            }
+            h1 { color: #ff6b6b; margin-bottom: 20px; }
+            p { line-height: 1.6; margin: 10px 0; }
+            code { background: #2d2d3a; padding: 2px 6px; border-radius: 3px; }
+          </style>
+        </head>
+        <body>
+          <div class="error-container">
+            <h1>Failed to Load Application</h1>
+            <p><strong>Error Code:</strong> <code>${errorCode}</code></p>
+            <p><strong>Description:</strong> ${errorDescription}</p>
+            ${isDev ? '<p>Please ensure the Vite dev server is running on <code>http://localhost:5173</code></p><p>Run <code>npm run dev:vite</code> in a terminal.</p>' : '<p>Please try restarting the application.</p>'}
+          </div>
+        </body>
+        </html>
+      `;
+      mainWindow.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(errorHtml)}`).catch(() => {});
+      
       // Retry loading after a short delay if Vite server might be starting
-      if (isDev && errorCode === -105 || errorCode === -106) {
+      if (isDev && (errorCode === -105 || errorCode === -106)) {
         setTimeout(() => {
           if (mainWindow) {
-            safeLog('Retrying to load Vite dev server...');
-            mainWindow.loadURL('http://localhost:5173').catch((err) => {
-              safeError('Retry failed:', err);
+            safeLog('[Main] Retrying to load Vite dev server...');
+            safeLoadLocalhost(mainWindow, 'http://localhost:5173').catch((err) => {
+              safeError('[Main] Retry failed:', err);
             });
           }
         }, 2000);
@@ -207,18 +612,327 @@ function createWindow() {
   });
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173').catch((err) => {
-      safeError('Failed to load Vite dev server:', err);
+    // Add console logging for debugging
+    mainWindow.webContents.on('console-message', (_event, level, message) => {
+      safeLog(`[Renderer ${level}]:`, message);
+    });
+    
+    mainWindow.webContents.on('did-finish-load', () => {
+      safeLog('[Main] Page finished loading successfully');
+      // Ensure window is visible and focused after load
       if (mainWindow) {
-        mainWindow.show();
+        if (!mainWindow.isVisible()) {
+          mainWindow.show();
+        }
+        mainWindow.focus();
       }
     });
-    mainWindow.webContents.openDevTools();
+    
+    // Add a listener for DOM ready to check if React app loaded
+    mainWindow.webContents.once('dom-ready', () => {
+      safeLog('[Main] DOM ready');
+      // Check if React app loaded by looking for root element content
+      mainWindow?.webContents.executeJavaScript(`
+        (function() {
+          const root = document.getElementById('root');
+          if (root && root.children.length === 0) {
+            console.warn('[Main] Root element is empty - React app may not have loaded');
+          }
+        })();
+      `).catch(() => {});
+    });
+    
+    // Show loading page first, then try to load Vite server
+    const loadingHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>FlowState - Loading</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+          }
+          body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #1A1A1D !important;
+            color: #ffffff !important;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .loading-container {
+            text-align: center;
+          }
+          .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top: 3px solid #ffffff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+          }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+          p {
+            font-size: 16px;
+            color: #ffffff !important;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="loading-container">
+          <div class="spinner"></div>
+          <p>Loading FlowState...</p>
+        </div>
+      </body>
+      </html>
+    `;
+    // Load loading page immediately and ensure window is visible
+    safeLog('[Main] Attempting to load loading page...');
+    mainWindow.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(loadingHtml)}`).then(() => {
+      safeLog('[Main] Loading page displayed successfully');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.focus();
+        safeLog('[Main] Window shown and focused after loading page');
+      }
+    }).catch((err) => {
+      safeError('[Main] Failed to load loading page:', err);
+      // Don't inject error HTML - just show window and let Vite load
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    
+    // Wait for Vite dev server to be ready before loading
+    if (isDev) {
+      waitForViteServer()
+        .then((port) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            safeLog(`[Main] Vite server is ready on port ${port}, loading application...`);
+            safeLoadLocalhost(mainWindow, `http://localhost:${port}`).then(() => {
+              safeLog('[Main] Successfully loaded Vite dev server');
+            }).catch((err) => {
+              safeError('[Main] Failed to load Vite dev server:', err);
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.show();
+                const showErrorPage = (message: string) => {
+                  if (mainWindow && !mainWindow.isDestroyed()) {
+                    const errorHtml = `
+                      <!DOCTYPE html>
+                      <html>
+                      <head>
+                        <meta charset="UTF-8">
+                        <title>FlowState - Dev Server Error</title>
+                        <style>
+                          * { margin: 0; padding: 0; box-sizing: border-box; }
+                          html, body {
+                            width: 100%;
+                            height: 100%;
+                            overflow: auto;
+                          }
+                          body {
+                            font-family: system-ui, -apple-system, sans-serif;
+                            background: #1A1A1D;
+                            color: #ffffff;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            padding: 20px;
+                          }
+                          .error-container {
+                            text-align: center;
+                            max-width: 600px;
+                            padding: 40px;
+                            background: rgba(255, 255, 255, 0.05);
+                            border-radius: 12px;
+                            border: 1px solid rgba(255, 255, 255, 0.1);
+                          }
+                          h1 {
+                            color: #ff6b6b;
+                            margin-bottom: 20px;
+                            font-size: 24px;
+                          }
+                          p {
+                            line-height: 1.6;
+                            margin: 10px 0;
+                            color: #ffffff;
+                          }
+                          code {
+                            background: rgba(255, 255, 255, 0.1);
+                            padding: 2px 6px;
+                            border-radius: 4px;
+                            font-family: 'Courier New', monospace;
+                            color: #ffffff;
+                          }
+                        </style>
+                      </head>
+                      <body>
+                        <div class="error-container">
+                          <h1>Development Server Not Running</h1>
+                          <p>${message}</p>
+                          <p>Run <code>npm run dev:vite</code> in a terminal, then restart the app.</p>
+                          <p style="margin-top: 20px; font-size: 14px; color: rgba(255, 255, 255, 0.7);">Or run <code>npm run dev</code> to start both Electron and Vite together.</p>
+                        </div>
+                      </body>
+                      </html>
+                    `;
+                    mainWindow.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(errorHtml)}`).then(() => {
+                      safeLog('[Main] Error page displayed');
+                      if (mainWindow) {
+                        mainWindow.show();
+                        mainWindow.focus();
+                      }
+                    }).catch((loadErr) => {
+                      safeError('[Main] Failed to load error page:', loadErr);
+                      if (mainWindow) {
+                        mainWindow.show();
+                      }
+                    });
+                  }
+                };
+                showErrorPage('Vite dev server is not running on http://localhost:5173');
+              }
+            });
+        }
+      })
+        .catch((err) => {
+        safeError('[Main] Vite server not available after waiting:', err);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          const showErrorPage = (message: string) => {
+            safeLog('[Main] Showing error page:', message);
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              const errorHtml = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                  <meta charset="UTF-8">
+                  <title>FlowState - Dev Server Error</title>
+                  <style>
+                    * { margin: 0; padding: 0; box-sizing: border-box; }
+                    html, body {
+                      width: 100%;
+                      height: 100%;
+                      overflow: auto;
+                    }
+                    body {
+                      font-family: system-ui, -apple-system, sans-serif;
+                      background: #1A1A1D;
+                      color: #ffffff;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      padding: 20px;
+                    }
+                    .error-container {
+                      text-align: center;
+                      max-width: 600px;
+                      padding: 40px;
+                      background: rgba(255, 255, 255, 0.05);
+                      border-radius: 12px;
+                      border: 1px solid rgba(255, 255, 255, 0.1);
+                    }
+                    h1 {
+                      color: #ff6b6b;
+                      margin-bottom: 20px;
+                      font-size: 24px;
+                    }
+                    p {
+                      line-height: 1.6;
+                      margin: 10px 0;
+                      color: #ffffff;
+                    }
+                    code {
+                      background: rgba(255, 255, 255, 0.1);
+                      padding: 2px 6px;
+                      border-radius: 4px;
+                      font-family: 'Courier New', monospace;
+                      color: #ffffff;
+                    }
+                  </style>
+                </head>
+                <body>
+                  <div class="error-container">
+                    <h1>Development Server Not Running</h1>
+                    <p>${message}</p>
+                    <p>Run <code>npm run dev:vite</code> in a terminal, then restart the app.</p>
+                    <p style="margin-top: 20px; font-size: 14px; color: rgba(255, 255, 255, 0.7);">Or run <code>npm run dev</code> to start both Electron and Vite together.</p>
+                  </div>
+                </body>
+                </html>
+              `;
+              mainWindow.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(errorHtml)}`).then(() => {
+                safeLog('[Main] Error page displayed');
+                if (mainWindow) {
+                  mainWindow.show();
+                  mainWindow.focus();
+                }
+              }).catch((loadErr) => {
+                safeError('[Main] Failed to load error page:', loadErr);
+                if (mainWindow) {
+                  mainWindow.show();
+                }
+              });
+            }
+          };
+          showErrorPage(`Vite dev server is not running. Please run 'npm run dev' to start both Vite and Electron together. Error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      });
+    }
+    
+    if (isDev) {
+      mainWindow.webContents.openDevTools();
+    }
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html')).catch((err) => {
-      safeError('Failed to load HTML file:', err);
+      safeError('[Main] Failed to load HTML file:', err);
       if (mainWindow) {
         mainWindow.show();
+        const errorHtml = `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <title>FlowState - Load Error</title>
+            <style>
+              body {
+                margin: 0;
+                padding: 40px;
+                font-family: system-ui, -apple-system, sans-serif;
+                background: #1A1A1D;
+                color: #ffffff;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+              }
+              .error-container {
+                max-width: 600px;
+                text-align: center;
+              }
+              h1 { color: #ff6b6b; margin-bottom: 20px; }
+              p { line-height: 1.6; margin: 10px 0; }
+            </style>
+          </head>
+          <body>
+            <div class="error-container">
+              <h1>Failed to Load Application</h1>
+              <p>Error: ${err instanceof Error ? err.message : String(err)}</p>
+              <p>Please try restarting the application.</p>
+            </div>
+          </body>
+          </html>
+        `;
+        mainWindow.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(errorHtml)}`).catch(() => {});
       }
     });
   }
@@ -235,8 +949,48 @@ app.whenReady().then(async () => {
     await initDatabase();
     safeLog('[Main] Database initialized successfully');
 
+    // Check for auto-recovery on app startup
+    safeLog('[Main] Checking for auto-recovery...');
+    const { checkAutoRecoveryForAllUsers } = await import('./session-management.js');
+    checkAutoRecoveryForAllUsers();
+    safeLog('[Main] Auto-recovery check completed');
+
+    // Check if migration is needed and run it automatically
+    safeLog('[Main] Checking if capture-to-session migration is needed...');
+    try {
+      const { needsMigration, migrateCapturesToSessions } = await import('./migrations/migrate-captures-to-sessions.js');
+      if (needsMigration()) {
+        safeLog('[Main] Running capture-to-session migration...');
+        const result = migrateCapturesToSessions();
+        if (result.success) {
+          safeLog(`[Main] Migration complete: ${result.sessionsCreated} sessions created, ${result.capturesMigrated} captures migrated`);
+        } else {
+          safeError('[Main] Migration failed:', result.error);
+        }
+      } else {
+        safeLog('[Main] No migration needed');
+      }
+    } catch (migrationError) {
+      safeError('[Main] Error checking/running migration:', migrationError);
+      // Don't block app startup if migration fails
+    }
+
     createWindow();
     initializePowerMonitor();
+    
+    // Set up background task to check for new day sessions and auto-capture
+    setupNewDayAutoCapture();
+    
+    // DISABLED: Browser interceptor was too aggressive - it forcefully closed browsers without user consent
+    // TODO: Make this opt-in with a setting and show a dialog asking for permission before closing browsers
+    // Start monitoring for browser launches to auto-intercept them
+    // try {
+    //   const { startBrowserLaunchMonitoring } = await import('./browser-launch-interceptor.js');
+    //   startBrowserLaunchMonitoring();
+    //   safeLog('[Main] Browser launch monitoring started');
+    // } catch (error) {
+    //   safeError('[Main] Failed to start browser launch monitoring:', error);
+    // }
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -288,25 +1042,93 @@ app.on('window-all-closed', () => {
 // IPC Handlers
 ipcMain.handle(
   'capture-workspace',
-  async (_, payload?: { name?: string; userId?: number }) => {
+  async (event, payload?: { name?: string; userId?: number; sessionId?: number }) => {
   try {
-      const { name, userId } = payload || {};
-      if (typeof userId !== 'number') {
-        return { success: false, error: 'userId is required' };
+      const { validateId, sanitizeString } = await import('./utils/security.js');
+      const { ErrorCode } = await import('./utils/errors.js');
+
+      const { name, userId, sessionId } = payload || {};
+
+      // Validate userId
+      if (typeof userId !== 'number' || !validateId(userId)) {
+        return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
       }
 
-      safeLog('[Main] Starting workspace capture...');
-      const capture = await captureWorkspace(name, userId);
-    safeLog('[Main] Capture successful:', capture);
+      // Validate and sanitize name if provided
+      let sanitizedName: string | undefined = undefined;
+      if (name !== undefined) {
+        if (typeof name !== 'string') {
+          return { success: false, error: 'Invalid name (must be string)', code: ErrorCode.INVALID_INPUT };
+        }
+        sanitizedName = sanitizeString(name.trim(), 200);
+        if (sanitizedName.length === 0) {
+          sanitizedName = undefined; // Treat empty as undefined
+        }
+      }
 
-    // Verify capture actually has assets
-    const { prepare } = await import('./database.js');
+      // Validate sessionId if provided
+      if (sessionId !== undefined && (typeof sessionId !== 'number' || !validateId(sessionId))) {
+        return { success: false, error: 'Invalid sessionId', code: ErrorCode.INVALID_INPUT };
+      }
+
+      // Get the current session for today (will create a new one if it's a new day)
+      // This ensures captures always go to today's session when the clock hits midnight
+      const { getCurrentWorkSession } = await import('./session-management.js');
+      const currentSession = getCurrentWorkSession(userId);
+      const wasNewDaySession = (currentSession as any).wasNewDaySession === true;
+      
+      // Use the current session (for today) unless a specific sessionId was explicitly provided
+      // If sessionId was provided, validate it's still valid for today, otherwise use current session
+      let finalSessionId = sessionId;
+      if (sessionId === undefined || sessionId === null) {
+        // No sessionId provided, use the current session for today
+        finalSessionId = currentSession.id;
+        safeLog(`[Main] No sessionId provided, using current session for today: ${finalSessionId}`);
+      } else {
+        // SessionId was provided, but verify it's still valid (from today)
+        // If the provided session is from a previous day, use today's session instead
+        if (sessionId !== currentSession.id) {
+          safeLog(`[Main] Provided sessionId ${sessionId} is from a previous day, using today's session: ${currentSession.id}`);
+          finalSessionId = currentSession.id;
+        } else {
+          finalSessionId = sessionId;
+        }
+      }
+
+      safeLog(`[Main] Starting workspace capture... (sessionId: ${finalSessionId}${wasNewDaySession ? ', new day session' : ''})`);
+
+      // Create progress callback that sends updates to the renderer
+      const progressCallback = (progress: any) => {
+        try {
+          event.sender.send('capture-progress', progress);
+        } catch (error) {
+          console.error('[Main] Failed to send progress update:', error);
+        }
+      };
+
+      const capture = await captureWorkspace(sanitizedName, userId, finalSessionId, progressCallback);
+      
+      // If this was a new day session and the capture was successful, schedule an automatic capture
+      // This ensures the new session gets populated when created at midnight
+      if (wasNewDaySession && capture) {
+        safeLog(`[Main] New day session created, capture completed. Session ${finalSessionId} now has a capture.`);
+      }
+      safeLog('[Main] Capture successful:', capture);
+
+      // Verify capture actually has assets
+      const { prepare } = await import('./database.js');
       const assetCount = prepare('SELECT COUNT(*) as count FROM assets WHERE capture_id = ?').get(
         capture.id
-      );
+      ) as { count: number } | null;
+      
+      const assetCountValue = assetCount?.count || 0;
       safeLog(
-        `[Main] Verification after capture: Found ${assetCount?.count || 0} assets for capture ${capture.id}`
+        `[Main] Verification after capture: Found ${assetCountValue} assets for capture ${capture.id}`
       );
+
+      if (assetCountValue === 0) {
+        safeError('[Main] WARNING: Capture completed but no assets were found in database');
+      }
 
       return { success: true, data: capture };
   } catch (error) {
@@ -321,12 +1143,17 @@ ipcMain.handle(
   'restore-workspace',
   async (_, payload?: { captureId: number; userId?: number }) => {
     try {
+      const { validateId } = await import('./utils/security.js');
+      const { ErrorCode } = await import('./utils/errors.js');
+      
       const { captureId, userId } = payload || { captureId: undefined };
-      if (typeof captureId !== 'number') {
-        return { success: false, error: 'captureId is required' };
+      
+      // Validate inputs
+      if (typeof captureId !== 'number' || !validateId(captureId)) {
+        return { success: false, error: 'Invalid captureId', code: ErrorCode.INVALID_INPUT };
       }
-      if (typeof userId !== 'number') {
-        return { success: false, error: 'userId is required' };
+      if (typeof userId !== 'number' || !validateId(userId)) {
+        return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
       }
 
       const { prepare } = await import('./database.js');
@@ -347,22 +1174,44 @@ ipcMain.handle(
       await restoreWorkspace(captureId);
       return { success: true };
     } catch (error) {
+      const errorMessage = (error as Error).message;
       safeError('Failed to restore workspace:', error);
-      return { success: false, error: (error as Error).message };
+      // Check if it was cancelled
+      if (errorMessage === 'Restoration cancelled') {
+        return { success: false, error: 'Restoration was cancelled', cancelled: true };
+      }
+      return { success: false, error: errorMessage };
     }
   }
 );
+
+ipcMain.handle('cancel-restoration', async () => {
+  try {
+    const { cancelRestoration } = await import('./restore.js');
+    cancelRestoration();
+    safeLog('[Main IPC] Restoration cancellation requested');
+    return { success: true };
+  } catch (error) {
+    safeError('[Main IPC] Failed to cancel restoration:', error);
+    return { success: false, error: (error as Error).message };
+  }
+});
 
 ipcMain.handle(
   'restore-asset',
   async (_, payload?: { assetId: number; userId?: number }) => {
     try {
+      const { validateId } = await import('./utils/security.js');
+      const { ErrorCode } = await import('./utils/errors.js');
+      
       const { assetId, userId } = payload || { assetId: undefined };
-      if (typeof assetId !== 'number') {
-        return { success: false, error: 'assetId is required' };
+      
+      // Validate inputs
+      if (typeof assetId !== 'number' || !validateId(assetId)) {
+        return { success: false, error: 'Invalid assetId', code: ErrorCode.INVALID_INPUT };
       }
-      if (typeof userId !== 'number') {
-        return { success: false, error: 'userId is required' };
+      if (typeof userId !== 'number' || !validateId(userId)) {
+        return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
       }
 
       const { prepare } = await import('./database.js');
@@ -403,16 +1252,43 @@ ipcMain.handle(
 
 ipcMain.handle('get-power-status', () => powerStatus);
 
-ipcMain.handle('get-captures', async (_, userId?: number) => {
+ipcMain.handle('get-captures', async (_, payload?: { userId: number; sessionId?: number; includeArchived?: boolean }) => {
   try {
-    if (typeof userId !== 'number') {
-      return { success: false, error: 'userId is required' };
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    const userId = typeof payload === 'object' ? payload.userId : payload;
+    const sessionId = typeof payload === 'object' ? payload.sessionId : undefined;
+    const includeArchived = typeof payload === 'object' ? (payload.includeArchived || false) : false;
+    
+    // Validate userId
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
     }
-    safeLog('Getting captures from database...');
+    
+    // Validate sessionId if provided
+    if (sessionId !== undefined && (typeof sessionId !== 'number' || !validateId(sessionId))) {
+      return { success: false, error: 'Invalid sessionId', code: ErrorCode.INVALID_INPUT };
+    }
+    safeLog(`Getting captures from database... (sessionId: ${sessionId || 'all'}, includeArchived: ${includeArchived})`);
     const { prepare } = await import('./database.js');
-    const captures = prepare(
-      'SELECT * FROM captures WHERE user_id = ? OR user_id IS NULL ORDER BY created_at DESC'
-    ).all(userId);
+    
+    let query = 'SELECT * FROM captures WHERE (user_id = ? OR user_id IS NULL)';
+    let params: (number | boolean)[] = [userId];
+    
+    if (!includeArchived) {
+      query += ' AND archived = 0';
+    }
+    
+    if (sessionId !== undefined) {
+      // If sessionId is provided, show captures for that session OR captures with no session_id (legacy captures)
+      query += ' AND (session_id = ? OR session_id IS NULL)';
+      params.push(sessionId);
+    }
+    
+    query += ' ORDER BY created_at DESC';
+    
+    const captures = prepare(query).all(...params);
 
     safeLog(`Found ${captures.length} captures`);
     return { success: true, data: captures };
@@ -550,12 +1426,17 @@ ipcMain.handle(
   'delete-capture',
   async (_, payload?: { captureId: number; userId?: number }) => {
   try {
+      const { validateId } = await import('./utils/security.js');
+      const { ErrorCode } = await import('./utils/errors.js');
+      
       const { captureId, userId } = payload || { captureId: undefined };
-      if (typeof captureId !== 'number') {
-        return { success: false, error: 'captureId is required' };
+      
+      // Validate inputs
+      if (typeof captureId !== 'number' || !validateId(captureId)) {
+        return { success: false, error: 'Invalid captureId', code: ErrorCode.INVALID_INPUT };
       }
-      if (typeof userId !== 'number') {
-        return { success: false, error: 'userId is required' };
+      if (typeof userId !== 'number' || !validateId(userId)) {
+        return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
       }
       const { prepare, saveDatabase } = await import('./database.js');
 
@@ -578,8 +1459,11 @@ ipcMain.handle(
 
 ipcMain.handle('get-settings', async (_, userId?: number) => {
   try {
-    if (typeof userId !== 'number') {
-      return { success: false, error: 'userId is required' };
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
     }
     const { prepare } = await import('./database.js');
     const userSettings = prepare('SELECT key, value FROM settings WHERE user_id = ?').all(userId);
@@ -606,23 +1490,43 @@ ipcMain.handle('get-settings', async (_, userId?: number) => {
 
 ipcMain.handle(
   'save-settings',
-  async (_, payload?: { settings: Record<string, any>; userId?: number }) => {
+  async (_, payload?: { settings: Record<string, unknown>; userId?: number }) => {
   try {
+      const { validateId, sanitizeString } = await import('./utils/security.js');
+      const { ErrorCode } = await import('./utils/errors.js');
+      
       const { settings, userId } = payload || {};
-      if (!settings) {
-        return { success: false, error: 'No settings provided' };
+      if (!settings || typeof settings !== 'object') {
+        return { success: false, error: 'Invalid settings (must be object)', code: ErrorCode.INVALID_INPUT };
       }
-      if (typeof userId !== 'number') {
-        return { success: false, error: 'userId is required' };
+      if (typeof userId !== 'number' || !validateId(userId)) {
+        return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
+      }
+      
+      // Validate and sanitize setting keys and values
+      const sanitizedSettings: Record<string, string> = {};
+      for (const [key, value] of Object.entries(settings)) {
+        // Sanitize key
+        const sanitizedKey = sanitizeString(key.trim(), 100);
+        if (sanitizedKey.length === 0) {
+          continue; // Skip empty keys
+        }
+        
+        // Convert value to string and sanitize
+        const valueStr = typeof value === 'string' 
+          ? sanitizeString(value, 10000) // Allow longer values for settings
+          : JSON.stringify(value);
+        
+        sanitizedSettings[sanitizedKey] = valueStr;
       }
 
       const { prepare, saveDatabase } = await import('./database.js');
 
-      for (const [key, value] of Object.entries(settings)) {
-        const valueStr = typeof value === 'string' ? value : JSON.stringify(value);
+      // Save sanitized settings
+      for (const [key, value] of Object.entries(sanitizedSettings)) {
         prepare('INSERT OR REPLACE INTO settings (key, value, user_id) VALUES (?, ?, ?)').run(
           key,
-          valueStr,
+          value,
           userId
         );
       }
@@ -630,68 +1534,257 @@ ipcMain.handle(
       saveDatabase();
       return { success: true };
   } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
     safeError('Failed to save settings:', error);
-    return { success: false, error: (error as Error).message };
+    return handleError(error);
   }
 });
 
 ipcMain.handle('launch-browser-with-debugging', async (_, browserName: string) => {
   try {
-    safeLog(`[Main IPC] Launching ${browserName} with remote debugging...`);
+    const { sanitizeString } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate and sanitize browser name
+    if (typeof browserName !== 'string') {
+      return { success: false, error: 'Invalid browserName (must be string)', code: ErrorCode.INVALID_INPUT };
+    }
+    const sanitizedBrowserName = sanitizeString(browserName.trim(), 50);
+    if (sanitizedBrowserName.length === 0) {
+      return { success: false, error: 'Browser name cannot be empty', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate browser name is from allowed list
+    const allowedBrowsers = ['chrome', 'edge', 'firefox', 'brave', 'safari'];
+    if (!allowedBrowsers.includes(sanitizedBrowserName.toLowerCase())) {
+      return { success: false, error: `Invalid browser name. Allowed: ${allowedBrowsers.join(', ')}`, code: ErrorCode.INVALID_INPUT };
+    }
+    
+    safeLog(`[Main IPC] Launching ${sanitizedBrowserName} with remote debugging...`);
     const { launchBrowserWithDebugging } = await import('./browser-integration.js');
-    const result = await launchBrowserWithDebugging(browserName);
+    const result = await launchBrowserWithDebugging(sanitizedBrowserName);
     return result;
   } catch (error) {
-    safeError(`[Main IPC] Failed to launch ${browserName}:`, error);
-    return { success: false, error: (error as Error).message };
+    const { handleError } = await import('./utils/errors.js');
+    safeError(`[Main IPC] Failed to launch browser:`, error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('get-browsers-without-debugging', async () => {
+  try {
+    const { detectBrowsersWithoutDebugging } = await import('./browser-integration.js');
+    const browsers = await detectBrowsersWithoutDebugging();
+    return { success: true, data: browsers };
+  } catch (error) {
+    safeError('[Main IPC] Failed to detect browsers without debugging:', error);
+    return { success: false, error: (error as Error).message, data: [] };
+  }
+});
+
+ipcMain.handle('prompt-close-and-relaunch-browser', async (_, browserName: string) => {
+  try {
+    const { sanitizeString } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate and sanitize browser name
+    if (typeof browserName !== 'string') {
+      return { success: false, error: 'Invalid browserName (must be string)', code: ErrorCode.INVALID_INPUT };
+    }
+    const sanitizedBrowserName = sanitizeString(browserName.trim(), 50);
+    if (sanitizedBrowserName.length === 0) {
+      return { success: false, error: 'Browser name cannot be empty', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate browser name is from allowed list
+    const allowedBrowsers = ['chrome', 'edge', 'firefox', 'brave', 'safari'];
+    if (!allowedBrowsers.includes(sanitizedBrowserName.toLowerCase())) {
+      return { success: false, error: `Invalid browser name. Allowed: ${allowedBrowsers.join(', ')}`, code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Show dialog to prompt user
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { success: false, error: 'Main window not available', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    const normalizedName = sanitizedBrowserName.charAt(0).toUpperCase() + sanitizedBrowserName.slice(1).toLowerCase();
+    const browserNameMap: Record<string, string> = {
+      'Chrome': 'Chrome',
+      'Brave': 'Brave',
+      'Edge': 'Edge',
+      'Msedge': 'Edge',
+    };
+    const displayName = browserNameMap[normalizedName] || normalizedName;
+    
+    const response = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['Yes, Close and Relaunch', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      title: 'Enable Browser Debugging',
+      message: `${displayName} needs to be closed and reopened with debugging enabled`,
+      detail: `To capture ${displayName} tabs, FlowState needs to close ${displayName} and reopen it with remote debugging enabled.\n\nThis will close all ${displayName} windows. Any unsaved work in ${displayName} may be lost.\n\nWould you like to proceed?`,
+    });
+    
+    if (response.response === 0) {
+      // User clicked "Yes"
+      safeLog(`[Main IPC] User confirmed: Closing and relaunching ${displayName} with remote debugging...`);
+      const { closeAndRelaunchBrowserWithDebugging } = await import('./browser-integration.js');
+      const result = await closeAndRelaunchBrowserWithDebugging(sanitizedBrowserName);
+      return result;
+    } else {
+      // User clicked "Cancel"
+      return { success: false, error: 'User cancelled', cancelled: true };
+    }
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError(`[Main IPC] Failed to prompt close and relaunch browser:`, error);
+    return handleError(error);
   }
 });
 
 // Auth IPC Handlers
 ipcMain.handle('auth-signup', async (_, email: string, password: string, username?: string) => {
   try {
-    safeLog('[Main IPC] Signup request for:', email);
+    const { signupRateLimiter, validateEmail, sanitizeString, validatePassword, validateUsername } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Rate limiting check
+    const clientId = email || 'unknown';
+    if (!signupRateLimiter.check(clientId)) {
+      return { success: false, error: 'Too many signup attempts. Please try again in an hour.', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate inputs
+    if (typeof email !== 'string') {
+      return { success: false, error: 'Invalid email (must be string)', code: ErrorCode.INVALID_INPUT };
+    }
+    const sanitizedEmail = sanitizeString(email.toLowerCase().trim(), 254);
+    if (!validateEmail(sanitizedEmail)) {
+      return { success: false, error: 'Invalid email format', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    if (typeof password !== 'string') {
+      return { success: false, error: 'Invalid password (must be string)', code: ErrorCode.INVALID_INPUT };
+    }
+    const passwordValidation = validatePassword(password);
+    if (!passwordValidation.valid) {
+      return { success: false, error: passwordValidation.error || 'Invalid password', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate username if provided
+    let sanitizedUsername: string | undefined = undefined;
+    if (username !== undefined) {
+      if (typeof username !== 'string') {
+        return { success: false, error: 'Invalid username (must be string)', code: ErrorCode.INVALID_INPUT };
+      }
+      sanitizedUsername = sanitizeString(username.trim(), 30);
+      if (sanitizedUsername.length === 0) {
+        sanitizedUsername = undefined;
+      } else if (!validateUsername(sanitizedUsername)) {
+        return { success: false, error: 'Username must be 3-30 characters and contain only letters, numbers, underscores, and hyphens', code: ErrorCode.INVALID_INPUT };
+      }
+    }
+
+    safeLog('[Main IPC] Signup request for:', sanitizedEmail);
     const { createUser } = await import('./auth.js');
-    const result = await createUser(email, password, username);
+    const result = await createUser(sanitizedEmail, password, sanitizedUsername);
+    
+    // Reset rate limiter on successful signup
+    if (result.success) {
+      signupRateLimiter.reset(clientId);
+    }
+    
     return result;
   } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
     safeError('[Main IPC] Signup error:', error);
-    return { success: false, error: (error as Error).message };
+    return handleError(error);
   }
 });
 
 ipcMain.handle('auth-login', async (_, email: string, password: string) => {
   try {
-    safeLog('[Main IPC] Login request for:', email);
+    const { loginRateLimiter, validateEmail, sanitizeString } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Rate limiting check
+    const clientId = email || 'unknown';
+    if (!loginRateLimiter.check(clientId)) {
+      return { success: false, error: 'Too many login attempts. Please try again in 15 minutes.', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate inputs
+    if (typeof email !== 'string') {
+      return { success: false, error: 'Invalid email (must be string)', code: ErrorCode.INVALID_INPUT };
+    }
+    const sanitizedEmail = sanitizeString(email.toLowerCase().trim(), 254);
+    if (!validateEmail(sanitizedEmail)) {
+      return { success: false, error: 'Invalid email format', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    if (typeof password !== 'string') {
+      return { success: false, error: 'Invalid password (must be string)', code: ErrorCode.INVALID_INPUT };
+    }
+    if (password.length === 0) {
+      return { success: false, error: 'Password cannot be empty', code: ErrorCode.INVALID_INPUT };
+    }
+
+    safeLog('[Main IPC] Login request for:', sanitizedEmail);
     const { loginUser } = await import('./auth.js');
-    const result = await loginUser(email, password);
+    const result = await loginUser(sanitizedEmail, password);
+    
+    // Reset rate limiter on successful login
+    if (result.success) {
+      loginRateLimiter.reset(clientId);
+    }
+    
     return result;
   } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
     safeError('[Main IPC] Login error:', error);
-    return { success: false, error: (error as Error).message };
+    return handleError(error);
   }
 });
 
 ipcMain.handle('auth-verify-session', async (_, sessionToken: string) => {
   try {
+    const { validateSessionToken } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate session token format
+    if (typeof sessionToken !== 'string' || !validateSessionToken(sessionToken)) {
+      return { success: false, error: 'Invalid session token format', code: ErrorCode.INVALID_INPUT };
+    }
+    
     const { verifySession } = await import('./auth.js');
     const result = await verifySession(sessionToken);
     return result;
   } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
     safeError('[Main IPC] Session verification error:', error);
-    return { success: false, error: (error as Error).message };
+    return handleError(error);
   }
 });
 
 ipcMain.handle('auth-logout', async (_, sessionToken: string) => {
   try {
+    const { validateSessionToken } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate session token format
+    if (typeof sessionToken !== 'string' || !validateSessionToken(sessionToken)) {
+      return { success: false, error: 'Invalid session token format', code: ErrorCode.INVALID_INPUT };
+    }
+    
     safeLog('[Main IPC] Logout request');
     const { logoutUser } = await import('./auth.js');
     const result = await logoutUser(sessionToken);
     return result;
   } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
     safeError('[Main IPC] Logout error:', error);
-    return { success: false, error: (error as Error).message };
+    return handleError(error);
   }
 });
 
@@ -721,20 +1814,316 @@ ipcMain.handle('auth-delete-user', async (_, email: string) => {
 
 ipcMain.handle('auth-complete-feature-tour', async (_, userId: number) => {
   try {
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate userId
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
     safeLog(`[Main IPC] Complete feature tour for user ${userId}`);
     const { completeFeatureTour } = await import('./auth.js');
     const result = await completeFeatureTour(userId);
     return result;
   } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
     safeError('[Main IPC] Complete feature tour error:', error);
+    return handleError(error);
+  }
+});
+
+// Work Session Management IPC Handlers
+ipcMain.handle('session-get-current', async (_, userId: number) => {
+  try {
+    safeLog(`[Main IPC] Get current session for user ${userId}`);
+    const { getCurrentWorkSession } = await import('./session-management.js');
+    const session = getCurrentWorkSession(userId);
+    return { success: true, data: session };
+  } catch (error) {
+    safeError('[Main IPC] Get current session error:', error);
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('session-get-all', async (_, userId: number, includeArchived?: boolean) => {
+  try {
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate userId
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate includeArchived is boolean if provided
+    if (includeArchived !== undefined && typeof includeArchived !== 'boolean') {
+      return { success: false, error: 'Invalid includeArchived (must be boolean)', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    safeLog(`[Main IPC] Get all sessions for user ${userId}, includeArchived: ${includeArchived}`);
+    const { getUserWorkSessions } = await import('./session-management.js');
+    const sessions = getUserWorkSessions(userId, includeArchived || false);
+    return { success: true, data: sessions };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Get all sessions error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('session-create', async (_, userId: number, name?: string, description?: string) => {
+  try {
+    const { validateId, sanitizeString } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate userId
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate and sanitize name if provided
+    let sanitizedName: string | undefined = undefined;
+    if (name !== undefined) {
+      if (typeof name !== 'string') {
+        return { success: false, error: 'Invalid name (must be string)', code: ErrorCode.INVALID_INPUT };
+      }
+      sanitizedName = sanitizeString(name.trim(), 100);
+      if (sanitizedName.length === 0) {
+        sanitizedName = undefined;
+      }
+    }
+    
+    // Validate and sanitize description if provided
+    let sanitizedDescription: string | undefined = undefined;
+    if (description !== undefined) {
+      if (typeof description !== 'string') {
+        return { success: false, error: 'Invalid description (must be string)', code: ErrorCode.INVALID_INPUT };
+      }
+      sanitizedDescription = sanitizeString(description.trim(), 500);
+      if (sanitizedDescription.length === 0) {
+        sanitizedDescription = undefined;
+      }
+    }
+
+    safeLog(`[Main IPC] Create session for user ${userId}, name: ${sanitizedName || 'auto-generated'}`);
+    const { createWorkSession } = await import('./session-management.js');
+    const session = createWorkSession(userId, sanitizedName, sanitizedDescription);
+    return { success: true, data: session };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Create session error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('session-update', async (_, sessionId: number, name?: string, description?: string) => {
+  try {
+    const { validateId, sanitizeString } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate sessionId
+    if (typeof sessionId !== 'number' || !validateId(sessionId)) {
+      return { success: false, error: 'Invalid sessionId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    // Validate and sanitize name if provided
+    let sanitizedName: string | undefined = undefined;
+    if (name !== undefined) {
+      if (typeof name !== 'string') {
+        return { success: false, error: 'Invalid name (must be string)', code: ErrorCode.INVALID_INPUT };
+      }
+      sanitizedName = sanitizeString(name.trim(), 100);
+      if (sanitizedName.length === 0) {
+        sanitizedName = undefined;
+      }
+    }
+    
+    // Validate and sanitize description if provided
+    let sanitizedDescription: string | undefined = undefined;
+    if (description !== undefined) {
+      if (typeof description !== 'string') {
+        return { success: false, error: 'Invalid description (must be string)', code: ErrorCode.INVALID_INPUT };
+      }
+      sanitizedDescription = sanitizeString(description.trim(), 500);
+      if (sanitizedDescription.length === 0) {
+        sanitizedDescription = undefined;
+      }
+    }
+    
+    safeLog(`[Main IPC] Update session ${sessionId}, name: ${sanitizedName}`);
+    const { updateWorkSession } = await import('./session-management.js');
+    const result = updateWorkSession(sessionId, sanitizedName, sanitizedDescription);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Update session error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('session-archive', async (_, sessionId: number) => {
+  try {
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate sessionId
+    if (typeof sessionId !== 'number' || !validateId(sessionId)) {
+      return { success: false, error: 'Invalid sessionId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    safeLog(`[Main IPC] Archive session ${sessionId}`);
+    const { archiveWorkSession } = await import('./session-management.js');
+    const result = archiveWorkSession(sessionId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Archive session error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('session-delete', async (_, sessionId: number) => {
+  try {
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate sessionId
+    if (typeof sessionId !== 'number' || !validateId(sessionId)) {
+      return { success: false, error: 'Invalid sessionId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    safeLog(`[Main IPC] Delete session ${sessionId}`);
+    const { deleteWorkSession } = await import('./session-management.js');
+    const result = deleteWorkSession(sessionId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Delete session error:', error);
+    return handleError(error);
+  }
+});
+
+// Archive management IPC handlers
+ipcMain.handle('archive-capture', async (_, payload: { captureId: number; userId: number }) => {
+  try {
+    safeLog(`[Main IPC] Archive capture ${payload.captureId}`);
+    const { archiveCapture } = await import('./archive-management.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate inputs
+    if (typeof payload.captureId !== 'number' || typeof payload.userId !== 'number') {
+      return { success: false, error: 'Invalid captureId or userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    const result = archiveCapture(payload.captureId, payload.userId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Archive capture error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('unarchive-capture', async (_, payload: { captureId: number; userId: number }) => {
+  try {
+    safeLog(`[Main IPC] Unarchive capture ${payload.captureId}`);
+    const { unarchiveCapture } = await import('./archive-management.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate inputs
+    if (typeof payload.captureId !== 'number' || typeof payload.userId !== 'number') {
+      return { success: false, error: 'Invalid captureId or userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    const result = unarchiveCapture(payload.captureId, payload.userId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Unarchive capture error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('archive-asset', async (_, payload: { assetId: number; userId: number }) => {
+  try {
+    safeLog(`[Main IPC] Archive asset ${payload.assetId}`);
+    const { archiveAsset } = await import('./archive-management.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate inputs
+    if (typeof payload.assetId !== 'number' || typeof payload.userId !== 'number') {
+      return { success: false, error: 'Invalid assetId or userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    const result = archiveAsset(payload.assetId, payload.userId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Archive asset error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('unarchive-asset', async (_, payload: { assetId: number; userId: number }) => {
+  try {
+    safeLog(`[Main IPC] Unarchive asset ${payload.assetId}`);
+    const { unarchiveAsset } = await import('./archive-management.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate inputs
+    if (typeof payload.assetId !== 'number' || typeof payload.userId !== 'number') {
+      return { success: false, error: 'Invalid assetId or userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    const result = unarchiveAsset(payload.assetId, payload.userId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Unarchive asset error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('delete-asset', async (_, payload: { assetId: number; userId: number }) => {
+  try {
+    safeLog(`[Main IPC] Delete asset ${payload.assetId}`);
+    const { deleteAsset } = await import('./archive-management.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    // Validate inputs
+    if (typeof payload.assetId !== 'number' || typeof payload.userId !== 'number') {
+      return { success: false, error: 'Invalid assetId or userId', code: ErrorCode.INVALID_INPUT };
+    }
+    
+    const result = deleteAsset(payload.assetId, payload.userId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Delete asset error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('session-get-auto-recovered', async (_, userId: number) => {
+  try {
+    safeLog(`[Main IPC] Get auto-recovered sessions for user ${userId}`);
+    const { getAutoRecoveredSessions } = await import('./session-management.js');
+    const sessions = getAutoRecoveredSessions(userId);
+    return { success: true, data: sessions };
+  } catch (error) {
+    safeError('[Main IPC] Get auto-recovered sessions error:', error);
     return { success: false, error: (error as Error).message };
   }
 });
 
 ipcMain.handle('create-demo-capture', async (_, userId?: number) => {
   try {
-    if (typeof userId !== 'number') {
-      return { success: false, error: 'userId is required' };
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+    
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
     }
     safeLog(`[Main IPC] Creating demo capture for user ${userId}`);
     const { createDemoCapture } = await import('./capture.js');

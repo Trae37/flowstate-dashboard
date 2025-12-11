@@ -1,6 +1,6 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { prepare, saveDatabase, type Capture, type Asset } from './database.js';
+import { prepare, type Capture, type Asset } from './database.js';
 
 const execPromise = promisify(exec);
 
@@ -38,26 +38,42 @@ const logCapture = (...args: any[]) => {
   }
 };
 
-function createCaptureRecord(
+async function createCaptureRecord(
   name: string,
   contextDescription: string,
-  userId?: number
-): number {
-  const insertCapture = userId
-    ? prepare('INSERT INTO captures (name, context_description, user_id) VALUES (?, ?, ?)')
-    : prepare('INSERT INTO captures (name, context_description) VALUES (?, ?)');
-
-  const result = userId
-    ? insertCapture.run(name, contextDescription, userId)
-    : insertCapture.run(name, contextDescription);
-  const captureId = result.lastInsertRowid as number;
-
-  if (!captureId) {
-    throw new Error('Failed to create capture record');
+  userId?: number,
+  sessionId?: number
+): Promise<number> {
+  if (userId && sessionId) {
+    const insertCapture = prepare('INSERT INTO captures (name, context_description, user_id, session_id) VALUES (?, ?, ?, ?)');
+    const result = insertCapture.run(name, contextDescription, userId, sessionId);
+    const captureId = result.lastInsertRowid as number;
+    if (!captureId) {
+      throw new Error('Failed to create capture record');
+    }
+    logCapture(`[CAPTURE] Created capture record with ID: ${captureId} (session: ${sessionId})`);
+    
+    return captureId;
+  } else if (userId) {
+    const insertCapture = prepare('INSERT INTO captures (name, context_description, user_id) VALUES (?, ?, ?)');
+    const result = insertCapture.run(name, contextDescription, userId);
+    const captureId = result.lastInsertRowid as number;
+    if (!captureId) {
+      throw new Error('Failed to create capture record');
+    }
+    logCapture(`[CAPTURE] Created capture record with ID: ${captureId}`);
+    
+    return captureId;
+  } else {
+    const insertCapture = prepare('INSERT INTO captures (name, context_description) VALUES (?, ?)');
+    const result = insertCapture.run(name, contextDescription);
+    const captureId = result.lastInsertRowid as number;
+    if (!captureId) {
+      throw new Error('Failed to create capture record');
+    }
+    logCapture(`[CAPTURE] Created capture record with ID: ${captureId}`);
+    return captureId;
   }
-
-  logCapture(`[CAPTURE] Created capture record with ID: ${captureId}`);
-  return captureId;
 }
 
 function logAssetPreview(assets: Asset[]) {
@@ -149,7 +165,8 @@ function saveAssetsForCapture(captureId: number, assets: Asset[]) {
 
 async function persistCaptureData(captureId: number) {
   try {
-    await saveDatabase();
+    const { saveDatabase } = await import('./database.js');
+    saveDatabase(); // saveDatabase is synchronous, not async
     logCapture(`[Capture] Database saved successfully for capture ${captureId}`);
   } catch (error) {
     console.error(
@@ -202,7 +219,60 @@ function verifyAssetsSaved(captureId: number, expectedSaved: number) {
   }
 }
 
-async function runCaptureSteps(captureId: number) {
+/**
+ * Progress callback for capture steps
+ */
+export type CaptureProgressCallback = (progress: {
+  step: number;
+  totalSteps: number;
+  currentStep: string;
+  status: 'starting' | 'completed';
+  assetsCount?: number;
+}) => void;
+
+/**
+ * Yield control to the event loop to prevent UI blocking
+ */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Lower process priority to minimize system impact during capture
+ */
+async function lowerProcessPriority(): Promise<void> {
+  if (process.platform === 'win32') {
+    try {
+      // Set current process to Below Normal priority
+      await execPromise(`powershell -Command "$proc = Get-Process -Id ${process.pid}; $proc.PriorityClass = 'BelowNormal'"`);
+      logCapture('[CAPTURE] Lowered process priority to minimize system impact');
+    } catch (error) {
+      // Non-critical, continue if it fails
+      console.warn('[CAPTURE] Could not lower process priority:', error);
+    }
+  }
+}
+
+/**
+ * Restore process priority to normal
+ */
+async function restoreProcessPriority(): Promise<void> {
+  if (process.platform === 'win32') {
+    try {
+      // Restore to Normal priority
+      await execPromise(`powershell -Command "$proc = Get-Process -Id ${process.pid}; $proc.PriorityClass = 'Normal'"`);
+      logCapture('[CAPTURE] Restored process priority to normal');
+    } catch (error) {
+      // Non-critical
+      console.warn('[CAPTURE] Could not restore process priority:', error);
+    }
+  }
+}
+
+async function runCaptureSteps(
+  captureId: number,
+  progressCallback?: CaptureProgressCallback
+) {
   const assets: Asset[] = [];
   const summary: CaptureSummary = {
     vsCode: 0,
@@ -211,15 +281,56 @@ async function runCaptureSteps(captureId: number) {
     notes: 0,
   };
 
+  const totalSteps = captureSteps.length;
+
   for (const [index, step] of captureSteps.entries()) {
     const label = captureSummaryLabels[step.key];
-    logCapture(`[CAPTURE] Step ${index + 1}: Starting ${label} capture...`);
-    const stepAssets = await step.runner(captureId);
-    summary[step.key] = stepAssets.length;
-    logCapture(
-      `[CAPTURE] ✓ Captured ${stepAssets.length} ${label.toLowerCase()} assets`
-    );
+    const stepNumber = index + 1;
+
+    // Notify progress: starting this step
+    progressCallback?.({
+      step: stepNumber,
+      totalSteps,
+      currentStep: label,
+      status: 'starting',
+    });
+
+    logCapture(`[CAPTURE] Step ${stepNumber}: Starting ${label} capture...`);
+
+    // Run the capture step with error handling
+    let stepAssets: Asset[] = [];
+    try {
+      stepAssets = await step.runner(captureId);
+      summary[step.key] = stepAssets.length;
+
+      logCapture(
+        `[CAPTURE] ✓ Captured ${stepAssets.length} ${label.toLowerCase()} assets`
+      );
+    } catch (stepError: any) {
+      logCapture(`[CAPTURE] ✗ ERROR in ${label} capture step:`);
+      logCapture(`[CAPTURE]   Error: ${stepError?.message || String(stepError)}`);
+      if (stepError?.stack) {
+        logCapture(`[CAPTURE]   Stack: ${stepError.stack}`);
+      }
+      console.error(`[CAPTURE] Failed to capture ${label}:`, stepError);
+      // Continue with other steps even if one fails
+      stepAssets = [];
+      summary[step.key] = 0;
+    }
+
+    // Notify progress: completed this step
+    progressCallback?.({
+      step: stepNumber,
+      totalSteps,
+      currentStep: label,
+      status: 'completed',
+      assetsCount: stepAssets.length,
+    });
+
     assets.push(...stepAssets);
+
+    // Yield to event loop between steps to keep UI responsive
+    await yieldToEventLoop();
   }
 
   return { assets, summary };
@@ -345,17 +456,25 @@ export async function createDemoCapture(userId?: number): Promise<Capture> {
   };
 }
 
-export async function captureWorkspace(name?: string, userId?: number): Promise<Capture> {
-  const captureName = name || `Workspace Capture ${new Date().toLocaleString()}`;
+export async function captureWorkspace(
+  name?: string,
+  userId?: number,
+  sessionId?: number,
+  progressCallback?: CaptureProgressCallback
+): Promise<Capture> {
+  const captureName = name || 'Workspace Capture';
   const contextDescription = 'Auto-captured workspace state';
 
   logCapture('[CAPTURE] ============================================');
   logCapture('[CAPTURE] Starting workspace capture...');
   logCapture('[CAPTURE] ============================================');
 
+  // Lower process priority to minimize system impact during capture
+  await lowerProcessPriority();
+
   try {
-    const captureId = createCaptureRecord(captureName, contextDescription, userId);
-    const { assets, summary } = await runCaptureSteps(captureId);
+    const captureId = await createCaptureRecord(captureName, contextDescription, userId, sessionId);
+    const { assets, summary } = await runCaptureSteps(captureId, progressCallback);
 
     logCaptureSummary(summary, assets.length);
 
@@ -380,52 +499,88 @@ export async function captureWorkspace(name?: string, userId?: number): Promise<
       `Asset breakdown: ${summary.vsCode} VS Code, ${summary.terminal} terminal, ${summary.browser} browser, ${summary.notes} notes`
     );
 
+    // Cleanup old non-archived captures after successful capture (if limit exceeded)
+    // Archived captures are never deleted - they are user's explicit choices
+    if (userId) {
+      try {
+        const { cleanupOldCaptures } = await import('./database.js');
+        const { getAllSettings } = await import('./database.js');
+        
+        // Get user's retention limit preference, default to 100
+        const userSettings = getAllSettings(userId);
+        const retentionLimit = userSettings.retentionLimit 
+          ? parseInt(userSettings.retentionLimit, 10) 
+          : 100;
+        
+        cleanupOldCaptures(userId, retentionLimit);
+      } catch (cleanupError) {
+        // Don't fail the capture if cleanup fails
+        console.warn('[CAPTURE] Cleanup failed (non-critical):', cleanupError);
+      }
+    }
+
     return getCaptureRecord(captureId, captureName);
-  } catch (error) {
-    console.error('Error capturing workspace:', error);
+  } catch (error: any) {
+    logCapture('[CAPTURE] ============================================');
+    logCapture('[CAPTURE] ✗ CRITICAL ERROR: Capture failed');
+    logCapture('[CAPTURE] ============================================');
+    logCapture(`[CAPTURE] Error type: ${error?.constructor?.name || typeof error}`);
+    logCapture(`[CAPTURE] Error message: ${error?.message || String(error)}`);
+    if (error?.stack) {
+      logCapture(`[CAPTURE] Error stack: ${error.stack}`);
+    }
+    console.error('[CAPTURE] Error capturing workspace:', error);
     throw error;
+  } finally {
+    // Always restore process priority, even if capture fails
+    await restoreProcessPriority();
   }
 }
 
 async function captureNoteSessions(captureId: number): Promise<Asset[]> {
   const assets: Asset[] = [];
 
-  try {
-    // Import note integration module
-    const { captureNoteSessions: getNotes } = await import('./note-integration.js');
-
-    const sessions = await getNotes();
-    console.log(`[Note Capture] Captured ${sessions.length} note session(s)`);
-
-    for (const session of sessions) {
-      // Create a cleaner title for the asset card
-      let assetTitle = session.title || 'Untitled';
-      if (session.appName) {
-        assetTitle = `${session.appName}: ${assetTitle}`;
-      }
-
-      assets.push({
-        capture_id: captureId,
-        asset_type: 'notes',
-        title: assetTitle,
-        path: session.filePath || session.url,
-        content: session.content || `${session.appName} session`,
-        metadata: JSON.stringify({
-          appName: session.appName,
-          title: session.title,
-          url: session.url,
-          filePath: session.filePath,
-          processId: session.processId,
-        }),
-      });
-      
-      console.log(`[Note Capture] Saved note asset: ${assetTitle}`);
-    }
-  } catch (error) {
-    console.warn('[Note Capture] Could not capture note sessions:', error);
-  }
-
+  // TEMPORARY: Notes capture disabled due to hanging issue
+  // TODO: Fix note-integration.js hanging and re-enable
+  console.log('[Note Capture] Notes capture temporarily disabled');
   return assets;
+
+  // try {
+  //   // Import note integration module
+  //   const { captureNoteSessions: getNotes } = await import('./note-integration.js');
+
+  //   const sessions = await getNotes();
+  //   console.log(`[Note Capture] Captured ${sessions.length} note session(s)`);
+
+  //   for (const session of sessions) {
+  //     // Create a cleaner title for the asset card
+  //     let assetTitle = session.title || 'Untitled';
+  //     if (session.appName) {
+  //       assetTitle = `${session.appName}: ${assetTitle}`;
+  //     }
+
+  //     assets.push({
+  //       capture_id: captureId,
+  //       asset_type: 'notes',
+  //       title: assetTitle,
+  //       path: session.filePath || session.url,
+  //       content: session.content || `${session.appName} session`,
+  //       metadata: JSON.stringify({
+  //           appName: session.appName,
+  //           title: session.title,
+  //           url: session.url,
+  //           filePath: session.filePath,
+  //           processId: session.processId,
+  //         }),
+  //     });
+
+  //     console.log(`[Note Capture] Saved note asset: ${assetTitle}`);
+  //   }
+  // } catch (error) {
+  //   console.warn('[Note Capture] Could not capture note sessions:', error);
+  // }
+
+  // return assets;
 }
 
 async function captureVSCodeSessions(captureId: number): Promise<Asset[]> {
@@ -435,10 +590,16 @@ async function captureVSCodeSessions(captureId: number): Promise<Asset[]> {
     // Import the comprehensive IDE capture module
     const { captureIDESessions } = await import('./ide-capture.js');
 
-    logCapture('[Capture] Capturing IDE sessions...');
+    logCapture('[Capture] ============================================');
+    logCapture('[Capture] Starting IDE capture...');
+    logCapture('[Capture] ============================================');
+    
     const ideCapture = await captureIDESessions();
 
     logCapture(`[Capture] Found ${ideCapture.totalSessions} IDE session(s)`);
+    if (ideCapture.totalSessions === 0) {
+      logCapture('[Capture] ⚠️  No IDE sessions detected. Check console for details.');
+    }
 
     // Create an asset for each IDE session
     for (const session of ideCapture.sessions) {
@@ -496,8 +657,16 @@ async function captureVSCodeSessions(captureId: number): Promise<Asset[]> {
 
       logCapture(`[Capture] ✓ Captured ${session.ideName} session: ${primaryPath}`);
     }
-  } catch (error) {
-    console.warn('Could not capture IDE sessions:', error);
+  } catch (error: any) {
+    logCapture('[Capture] ============================================');
+    logCapture('[Capture] ✗ ERROR: Failed to capture IDE sessions');
+    logCapture('[Capture] ============================================');
+    logCapture('[Capture] Error type:', error?.constructor?.name || typeof error);
+    logCapture('[Capture] Error message:', error?.message || String(error));
+    if (error?.stack) {
+      logCapture('[Capture] Error stack:', error.stack);
+    }
+    console.error('Could not capture IDE sessions:', error);
   }
 
   return assets;
@@ -722,8 +891,10 @@ async function captureTerminalSessions(captureId: number): Promise<Asset[]> {
 
       for (const processName of terminalProcesses) {
         try {
-          const { stdout } = await execPromise(`tasklist /FI "IMAGENAME eq ${processName}"`);
-          if (stdout && stdout.includes(processName)) {
+          const { sanitizeProcessName } = await import('./utils/security.js');
+          const sanitizedProcess = sanitizeProcessName(processName);
+          const { stdout } = await execPromise(`tasklist /FI "IMAGENAME eq ${sanitizedProcess}"`);
+          if (stdout && stdout.includes(sanitizedProcess)) {
             detectedTerminals.push(processName);
           }
         } catch (err) {
@@ -855,8 +1026,10 @@ async function captureBrowserTabs(captureId: number): Promise<Asset[]> {
 
       for (const processName of browserProcesses) {
         try {
-          const { stdout } = await execPromise(`tasklist /FI "IMAGENAME eq ${processName}"`);
-          if (stdout && stdout.includes(processName)) {
+          const { sanitizeProcessName } = await import('./utils/security.js');
+          const sanitizedProcess = sanitizeProcessName(processName);
+          const { stdout } = await execPromise(`tasklist /FI "IMAGENAME eq ${sanitizedProcess}"`);
+          if (stdout && stdout.includes(sanitizedProcess)) {
             detectedBrowsers.push(processName.replace('.exe', ''));
           }
         } catch (err) {

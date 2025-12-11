@@ -3,6 +3,7 @@ import path from 'path';
 import { app } from 'electron';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { logger } from './utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -42,9 +43,7 @@ export async function initDatabase() {
   } catch (error) {
     // Use safe logging if available, otherwise suppress
     try {
-      if (typeof console !== 'undefined' && console.error) {
-        console.error('Error loading database, creating new one:', error);
-      }
+      logger.error('Error loading database, creating new one:', error);
     } catch {
       // Ignore logging errors
     }
@@ -67,7 +66,7 @@ export async function initDatabase() {
       );
     `);
 
-    // Create sessions table (new)
+    // Create sessions table (for authentication)
     db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +74,21 @@ export async function initDatabase() {
         session_token TEXT UNIQUE NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         expires_at DATETIME NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+
+    // Create work_sessions table (for organizing captures by work periods)
+    db.run(`
+      CREATE TABLE IF NOT EXISTS work_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        archived BOOLEAN DEFAULT 0,
+        archived_at DATETIME,
+        auto_recovered BOOLEAN DEFAULT 0,
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       );
     `);
@@ -98,9 +112,9 @@ export async function initDatabase() {
       // Add user_id column to existing table
       try {
         db.run('ALTER TABLE captures ADD COLUMN user_id INTEGER');
-        console.log('[Database] Migrated captures table: added user_id column');
+        logger.info('[Database] Migrated captures table: added user_id column');
       } catch (alterErr: any) {
-        console.warn('[Database] Could not add user_id to captures:', alterErr?.message);
+        logger.warn('[Database] Could not add user_id to captures:', alterErr?.message);
       }
     } else {
       // Create table if it doesn't exist
@@ -109,13 +123,17 @@ export async function initDatabase() {
           CREATE TABLE IF NOT EXISTS captures (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
+            session_id INTEGER,
             name TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            context_description TEXT
+            context_description TEXT,
+            archived BOOLEAN DEFAULT 0,
+            archived_at DATETIME,
+            FOREIGN KEY (session_id) REFERENCES work_sessions(id) ON DELETE SET NULL
           );
         `);
       } catch (err: any) {
-        console.warn('[Database] Error creating captures table:', err?.message);
+        logger.warn('[Database] Error creating captures table:', err?.message);
       }
     }
 
@@ -130,6 +148,8 @@ export async function initDatabase() {
         content TEXT,
         metadata TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        archived BOOLEAN DEFAULT 0,
+        archived_at DATETIME,
         FOREIGN KEY (capture_id) REFERENCES captures(id) ON DELETE CASCADE
       );
     `);
@@ -141,11 +161,11 @@ export async function initDatabase() {
         const columns = usersTableInfo[0].values.map((row: any[]) => row[1]);
         if (!columns.includes('feature_tour_completed')) {
           db.run('ALTER TABLE users ADD COLUMN feature_tour_completed BOOLEAN DEFAULT 0');
-          console.log('[Database] Migrated users table: added feature_tour_completed column');
+          logger.info('[Database] Migrated users table: added feature_tour_completed column');
         }
       }
     } catch (err: any) {
-      console.warn('[Database] Could not check/migrate users table:', err?.message);
+      logger.warn('[Database] Could not check/migrate users table:', err?.message);
     }
 
     // Create or migrate settings table with per-user support
@@ -170,7 +190,7 @@ export async function initDatabase() {
         settingsNeedsRebuild = true;
       }
     } catch (err) {
-      console.warn('[Database] Could not inspect settings table:', (err as Error).message);
+      logger.warn('[Database] Could not inspect settings table:', (err as Error).message);
       settingsNeedsRebuild = true;
     }
 
@@ -191,13 +211,13 @@ export async function initDatabase() {
           });
         }
       } catch (readErr) {
-        console.warn('[Database] Could not read existing settings during migration:', readErr);
+        logger.warn('[Database] Could not read existing settings during migration:', readErr);
       }
 
       try {
         db.run('DROP TABLE IF EXISTS settings');
       } catch (dropErr) {
-        console.warn('[Database] Could not drop settings table:', dropErr);
+        logger.warn('[Database] Could not drop settings table:', dropErr);
       }
     }
 
@@ -211,7 +231,7 @@ export async function initDatabase() {
         );
       `);
     } catch (err: any) {
-      console.warn('[Database] Error creating settings table:', err?.message);
+      logger.warn('[Database] Error creating settings table:', err?.message);
     }
 
     if (existingSettings.length > 0) {
@@ -222,10 +242,51 @@ export async function initDatabase() {
         for (const setting of existingSettings) {
           insertSetting.run(setting.key, setting.value, setting.user_id ?? 0);
         }
-        console.log('[Database] Migrated settings table with per-user support');
+        logger.info('[Database] Migrated settings table with per-user support');
       } catch (insertErr) {
-        console.warn('[Database] Failed to reinsert settings after migration:', insertErr);
+        logger.warn('[Database] Failed to reinsert settings after migration:', insertErr);
       }
+    }
+
+    // Migrate existing tables to add new columns
+    try {
+      // Add session_id to captures if it doesn't exist
+      const capturesTableInfo = db.exec("PRAGMA table_info(captures)");
+      if (capturesTableInfo.length > 0) {
+        const capturesColumns = capturesTableInfo[0].values.map((row: any[]) => row[1]);
+        if (!capturesColumns.includes('session_id')) {
+          db.run('ALTER TABLE captures ADD COLUMN session_id INTEGER');
+          logger.info('[Database] Migrated captures table: added session_id column');
+        }
+        if (!capturesColumns.includes('archived')) {
+          db.run('ALTER TABLE captures ADD COLUMN archived BOOLEAN DEFAULT 0');
+          logger.info('[Database] Migrated captures table: added archived column');
+        }
+        if (!capturesColumns.includes('archived_at')) {
+          db.run('ALTER TABLE captures ADD COLUMN archived_at DATETIME');
+          logger.info('[Database] Migrated captures table: added archived_at column');
+        }
+      }
+    } catch (err: any) {
+      logger.warn('[Database] Could not migrate captures table:', err?.message);
+    }
+
+    try {
+      // Add archived fields to assets if they don't exist
+      const assetsTableInfo = db.exec("PRAGMA table_info(assets)");
+      if (assetsTableInfo.length > 0) {
+        const assetsColumns = assetsTableInfo[0].values.map((row: any[]) => row[1]);
+        if (!assetsColumns.includes('archived')) {
+          db.run('ALTER TABLE assets ADD COLUMN archived BOOLEAN DEFAULT 0');
+          logger.info('[Database] Migrated assets table: added archived column');
+        }
+        if (!assetsColumns.includes('archived_at')) {
+          db.run('ALTER TABLE assets ADD COLUMN archived_at DATETIME');
+          logger.info('[Database] Migrated assets table: added archived_at column');
+        }
+      }
+    } catch (err: any) {
+      logger.warn('[Database] Could not migrate assets table:', err?.message);
     }
 
     // Create indexes
@@ -233,22 +294,25 @@ export async function initDatabase() {
       db.run(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token);`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_work_sessions_user_id ON work_sessions(user_id);`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_work_sessions_created_at ON work_sessions(created_at DESC);`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_assets_capture_id ON assets(capture_id);`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_captures_created_at ON captures(created_at DESC);`);
       db.run(`CREATE INDEX IF NOT EXISTS idx_captures_user_id ON captures(user_id);`);
+      db.run(`CREATE INDEX IF NOT EXISTS idx_captures_session_id ON captures(session_id);`);
     } catch (indexErr) {
       // Indexes might already exist, that's okay
-      console.warn('[Database] Some indexes might already exist:', indexErr);
+      logger.warn('[Database] Some indexes might already exist:', indexErr);
     }
   } catch (tableError) {
-    console.error('[Database] Error creating tables:', tableError);
+    logger.error('[Database] Error creating tables:', tableError);
     throw tableError;
   }
 
   // Save database to disk
   saveDatabase();
 
-  console.log('Database initialized at:', dbPath);
+  logger.info('Database initialized at:', dbPath);
 
   // Auto-cleanup: keep only last 100 captures
   cleanupOldCaptures(100);
@@ -302,9 +366,22 @@ export function prepare(sql: string) {
           if (param === null || param === undefined) {
             return 'NULL';
           }
-          return typeof param === 'string' 
-            ? `'${param.replace(/'/g, "''")}'` 
-            : String(param);
+          if (typeof param === 'string') {
+            // Escape single quotes and remove null bytes
+            const sanitized = param.replace(/\x00/g, '').replace(/'/g, "''");
+            return `'${sanitized}'`;
+          }
+          if (typeof param === 'number') {
+            // Validate number is finite
+            if (!Number.isFinite(param)) {
+              throw new Error(`Invalid number parameter: ${param}`);
+            }
+            return String(param);
+          }
+          if (typeof param === 'boolean') {
+            return param ? '1' : '0';
+          }
+          throw new Error(`Unsupported parameter type: ${typeof param}`);
         });
       }
       
@@ -324,7 +401,7 @@ export function prepare(sql: string) {
 
         return row;
       } catch (error) {
-        console.error('SQL query error:', {
+        logger.error('SQL query error:', {
           query,
           params,
           error: (error as Error).message,
@@ -345,9 +422,22 @@ export function prepare(sql: string) {
           if (param === null || param === undefined) {
             return 'NULL';
           }
-          return typeof param === 'string' 
-            ? `'${param.replace(/'/g, "''")}'` 
-            : String(param);
+          if (typeof param === 'string') {
+            // Escape single quotes and remove null bytes
+            const sanitized = param.replace(/\x00/g, '').replace(/'/g, "''");
+            return `'${sanitized}'`;
+          }
+          if (typeof param === 'number') {
+            // Validate number is finite
+            if (!Number.isFinite(param)) {
+              throw new Error(`Invalid number parameter: ${param}`);
+            }
+            return String(param);
+          }
+          if (typeof param === 'boolean') {
+            return param ? '1' : '0';
+          }
+          throw new Error(`Unsupported parameter type: ${typeof param}`);
         });
       }
       
@@ -358,15 +448,15 @@ export function prepare(sql: string) {
         const columns = result[0].columns;
         const values = result[0].values;
 
-        return values.map((row: any[]) => {
-          const obj: any = {};
+        return values.map((row: unknown[]) => {
+          const obj: Record<string, unknown> = {};
           columns.forEach((col: string, idx: number) => {
             obj[col] = row[idx];
           });
           return obj;
         });
       } catch (error) {
-        console.error('SQL query error:', {
+        logger.error('SQL query error:', {
           query,
           params,
           error: (error as Error).message,
@@ -405,7 +495,7 @@ export function getSetting(key: string, userId = 0): string | null {
     );
     return result?.value || null;
   } catch (error) {
-    console.error(`Error getting setting ${key}:`, error);
+    logger.error(`Error getting setting ${key}:`, error);
     return null;
   }
 }
@@ -418,63 +508,93 @@ export function setSetting(key: string, value: string, userId = 0): void {
       value,
       userId
     );
-    console.log(`Setting ${key} = ${value}`);
+    logger.info(`Setting ${key} = ${value}`);
   } catch (error) {
-    console.error(`Error setting ${key}:`, error);
+    logger.error(`Error setting ${key}:`, error);
   }
 }
 
 export function getAllSettings(userId = 0): Record<string, string> {
   try {
     const results = prepare('SELECT key, value FROM settings WHERE user_id = ?').all(userId);
-    return results.reduce((acc: Record<string, string>, row: any) => {
-      acc[row.key] = row.value;
+    return results.reduce((acc: Record<string, string>, row: Record<string, unknown>) => {
+      const key = row.key;
+      const value = row.value;
+      if (typeof key === 'string' && typeof value === 'string') {
+        acc[key] = value;
+      }
       return acc;
     }, {});
   } catch (error) {
-    console.error('Error getting all settings:', error);
+    logger.error('Error getting all settings:', error);
     return {};
   }
 }
 
 /**
- * Auto-cleanup old captures to keep only the most recent N captures
- * @param limit Number of captures to keep (default: 100)
+ * Auto-cleanup old non-archived captures to keep only the most recent N captures
+ * Archived captures are NEVER deleted - they are user's explicit choices
+ * @param userId User ID to clean up captures for (undefined for all users)
+ * @param limit Number of non-archived captures to keep per user (default: 100)
  */
-export function cleanupOldCaptures(limit: number = 100): void {
+export function cleanupOldCaptures(userId?: number, limit: number = 100): void {
   try {
-    const database = getDatabase();
+    // Build query to count non-archived captures
+    let countQuery = 'SELECT COUNT(*) as count FROM captures WHERE archived = 0';
+    let countParams: any[] = [];
+    
+    if (userId !== undefined) {
+      countQuery += ' AND user_id = ?';
+      countParams.push(userId);
+    }
 
-    // Get count of captures before cleanup
-    const countBefore = database.exec('SELECT COUNT(*) as count FROM captures');
-    const totalBefore = countBefore[0]?.values[0]?.[0] as number || 0;
+    const countResult = prepare(countQuery).get(...countParams) as { count: number } | null;
+    const totalBefore = countResult?.count || 0;
 
     if (totalBefore <= limit) {
-      console.log(`[Database] No cleanup needed: ${totalBefore} captures (limit: ${limit})`);
+      logger.info(`[Database] No cleanup needed: ${totalBefore} non-archived captures (limit: ${limit})`);
       return;
     }
 
-    // Delete old captures keeping only the last N
-    // Assets will be automatically deleted due to ON DELETE CASCADE
-    database.run(`
+    // Delete old non-archived captures, keeping only the most recent N
+    // IMPORTANT: Only delete non-archived captures - archived ones are user's explicit choices
+    let deleteQuery = `
       DELETE FROM captures
-      WHERE id NOT IN (
-        SELECT id FROM captures
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      )
-    `);
+      WHERE archived = 0
+        AND id NOT IN (
+          SELECT id FROM captures
+          WHERE archived = 0
+    `;
+    let deleteParams: any[] = [];
+
+    if (userId !== undefined) {
+      deleteQuery += ' AND user_id = ?';
+      deleteParams.push(userId);
+    }
+
+    deleteQuery += `
+          ORDER BY created_at DESC
+          LIMIT ${limit}
+        )
+    `;
+
+    if (userId !== undefined) {
+      deleteQuery += ' AND user_id = ?';
+      deleteParams.push(userId);
+    }
+
+    prepare(deleteQuery).run(...deleteParams);
 
     // Get count after cleanup
-    const countAfter = database.exec('SELECT COUNT(*) as count FROM captures');
-    const totalAfter = countAfter[0]?.values[0]?.[0] as number || 0;
+    const countAfterResult = prepare(countQuery).get(...countParams) as { count: number } | null;
+    const totalAfter = countAfterResult?.count || 0;
     const deleted = totalBefore - totalAfter;
 
     if (deleted > 0) {
       saveDatabase();
-      console.log(`[Database] Cleanup complete: deleted ${deleted} old capture(s), kept ${totalAfter}`);
+      logger.info(`[Database] Cleanup complete: deleted ${deleted} old non-archived capture(s), kept ${totalAfter} (archived captures preserved)`);
     }
   } catch (error) {
-    console.error('[Database] Error during cleanup:', error);
+    logger.error('[Database] Error during cleanup:', error);
   }
 }

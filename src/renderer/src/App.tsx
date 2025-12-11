@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ThemeProvider } from './contexts/ThemeContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import Dashboard from './pages/Dashboard';
 import ContextDetail from './pages/ContextDetail';
@@ -7,6 +8,8 @@ import Settings from './pages/Settings';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Onboarding from './pages/Onboarding';
+import Archive from './pages/Archive';
+import { useEffect } from 'react';
 
 // Protected route component
 function ProtectedRoute({ children }: { children: React.ReactElement }) {
@@ -15,8 +18,8 @@ function ProtectedRoute({ children }: { children: React.ReactElement }) {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#1a1d35] via-[#1e2542] to-[#151829]">
-        <div className="text-white">Loading...</div>
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50 dark:from-[#1a1d35] dark:via-[#1e2542] dark:to-[#151829]">
+        <div className="text-gray-900 dark:text-white">Loading...</div>
       </div>
     );
   }
@@ -39,8 +42,8 @@ function PublicRoute({ children }: { children: React.ReactElement }) {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#1a1d35] via-[#1e2542] to-[#151829]">
-        <div className="text-white">Loading...</div>
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50 dark:from-[#1a1d35] dark:via-[#1e2542] dark:to-[#151829]">
+        <div className="text-gray-900 dark:text-white">Loading...</div>
       </div>
     );
   }
@@ -56,6 +59,24 @@ function PublicRoute({ children }: { children: React.ReactElement }) {
 }
 
 function AppRoutes() {
+  const location = useLocation();
+  const { user } = useAuth();
+
+  // Track page views
+  useEffect(() => {
+    if (user?.id) {
+      const trackPageView = async () => {
+        try {
+          const { trackPageView } = await import('./utils/analytics');
+          trackPageView(location.pathname);
+        } catch (error) {
+          // Analytics not available or disabled
+        }
+      };
+      trackPageView();
+    }
+  }, [location.pathname, user?.id]);
+
   return (
     <Routes>
       <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
@@ -64,21 +85,27 @@ function AppRoutes() {
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/context/:id" element={<ProtectedRoute><ContextDetail /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+      <Route path="/archive" element={<ProtectedRoute><Archive /></ProtectedRoute>} />
+      <Route path="/archive/:date" element={<ProtectedRoute><Archive /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
 
 function App() {
+  console.log('[App] Rendering App component...');
+
   return (
     <ErrorBoundary>
-      <BrowserRouter>
-        <AuthProvider>
-          <div className="min-h-screen bg-gradient-to-br from-[#0F172A] via-[#1E293B] to-[#0F172A] noise-bg">
-            <AppRoutes />
-          </div>
-        </AuthProvider>
-      </BrowserRouter>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AuthProvider>
+            <div className="min-h-screen bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50 dark:from-[#0F172A] dark:via-[#1E293B] dark:to-[#0F172A] noise-bg">
+              <AppRoutes />
+            </div>
+          </AuthProvider>
+        </BrowserRouter>
+      </ThemeProvider>
     </ErrorBoundary>
   );
 }

@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import FeatureTour from '../components/FeatureTour';
 import AssetCard from '../components/AssetCard';
+import { formatFullDateTime } from '../utils/dateUtils';
 
 interface Capture {
   id: number;
@@ -120,6 +121,22 @@ function ContextDetail() {
     }
   };
 
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [restoreProgress, setRestoreProgress] = useState<string>('');
+
+  // Listen for restore progress updates
+  useEffect(() => {
+    if (!isRestoring) return;
+    
+    const cleanup = window.electronAPI.onRestoreProgress?.((message: string) => {
+      setRestoreProgress(message);
+    });
+
+    return () => {
+      cleanup?.();
+    };
+  }, [isRestoring]);
+
   const handleRestore = async () => {
     if (!id) return;
     if (!user?.id) {
@@ -127,16 +144,35 @@ function ContextDetail() {
       return;
     }
 
+    setIsRestoring(true);
+    setRestoreProgress('Starting restoration...');
+
     try {
       const result = await window.electronAPI.restoreWorkspace(Number(id), user.id);
+      setIsRestoring(false);
+      setRestoreProgress('');
+      
       if (result.success) {
         alert('Workspace restored successfully!');
+      } else if (result.cancelled) {
+        alert('Restoration was cancelled.');
       } else {
         alert(`Failed to restore workspace: ${result.error}`);
       }
     } catch (error) {
+      setIsRestoring(false);
+      setRestoreProgress('');
       console.error('Failed to restore workspace:', error);
       alert('Failed to restore workspace');
+    }
+  };
+
+  const handleCancelRestore = async () => {
+    try {
+      await window.electronAPI.cancelRestoration();
+      setRestoreProgress('Cancelling restoration...');
+    } catch (error) {
+      console.error('Failed to cancel restoration:', error);
     }
   };
 
@@ -245,7 +281,7 @@ function ContextDetail() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-white">Loading...</div>
+        <div className="text-gray-900 dark:text-white">Loading...</div>
       </div>
     );
   }
@@ -253,7 +289,7 @@ function ContextDetail() {
   if (!capture) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center">
-        <p className="text-white mb-4">Capture not found</p>
+        <p className="text-gray-900 dark:text-white mb-4">Capture not found</p>
         <Link to="/" className="text-primary hover:underline">
           Back to Dashboard
         </Link>
@@ -273,46 +309,57 @@ function ContextDetail() {
   };
 
   return (
-    <div className="min-h-screen p-4 sm:p-6 lg:p-8 bg-gradient-to-br from-[#1a1d35] via-[#1e2542] to-[#151829]">
+    <div className="min-h-screen p-4 sm:p-6 lg:p-8 bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50 dark:from-[#0F172A] dark:via-[#1E293B] dark:to-[#0F172A] noise-bg">
       {showFeatureTour && <FeatureTour onComplete={handleTourComplete} />}
       <div className="mx-auto max-w-7xl">
         <div className="mb-8 flex items-center justify-between">
           <Link
             data-tour="back-to-dashboard"
             to="/"
-            className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors"
+            className="flex items-center gap-2 text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white transition-colors"
           >
             <span className="material-symbols-outlined">arrow_back</span>
             <span>All Contexts</span>
           </Link>
 
-          <button
-            data-tour="restore-all-button"
-            onClick={handleRestore}
-            className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent/90 text-[#0F172A] rounded-lg transition-colors font-semibold"
-          >
-            <span className="material-symbols-outlined">play_circle</span>
-            Reopen All Assets
-          </button>
+          <div className="flex items-center gap-3">
+            {isRestoring ? (
+              <>
+                <button
+                  onClick={handleCancelRestore}
+                  className="flex items-center gap-2 px-6 py-3 bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors font-semibold"
+                >
+                  <span className="material-symbols-outlined">stop_circle</span>
+                  Cancel Restoration
+                </button>
+                {restoreProgress && (
+                  <span className="text-sm text-gray-600 dark:text-slate-400">{restoreProgress}</span>
+                )}
+              </>
+            ) : (
+              <button
+                data-tour="restore-all-button"
+                onClick={handleRestore}
+                className="flex items-center gap-2 px-6 py-3 bg-accent hover:bg-accent/90 text-[#0F172A] dark:text-[#0F172A] text-white rounded-lg transition-colors font-semibold"
+              >
+                <span className="material-symbols-outlined">play_circle</span>
+                Reopen All Assets
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="mb-8" data-tour="detail-view-header">
-          <h1 className="text-5xl font-bold text-white mb-3">{capture.name}</h1>
-          <p className="text-slate-400 text-lg">
-            Captured on {new Date(capture.created_at).toLocaleString('en-US', {
-              month: 'long',
-              day: 'numeric',
-              year: 'numeric',
-              hour: 'numeric',
-              minute: '2-digit',
-            })}
+          <h1 className="text-5xl font-bold text-gray-900 dark:text-white mb-3">{capture.name}</h1>
+          <p className="text-gray-600 dark:text-slate-400 text-lg">
+            Captured on {formatFullDateTime(capture.created_at)}
           </p>
         </div>
 
         {/* Search Bar */}
         <div className="mb-6">
           <div className="relative">
-            <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
+            <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 dark:text-slate-400">
               search
             </span>
             <input
@@ -320,12 +367,12 @@ function ContextDetail() {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by title, type, path, or 'claude' for Claude Code sessions..."
-              className="w-full pl-12 pr-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
+              className="w-full pl-12 pr-4 py-3 bg-gray-100 dark:bg-white/5 border border-gray-300 dark:border-white/10 rounded-lg text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
             />
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white transition-colors"
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white transition-colors"
               >
                 <span className="material-symbols-outlined">close</span>
               </button>
@@ -341,8 +388,8 @@ function ContextDetail() {
               onClick={() => setSelectedType('all')}
               className={`px-4 py-2 rounded-lg font-medium transition-all ${
                 selectedType === 'all'
-                  ? 'bg-accent text-[#0F172A]'
-                  : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white border border-white/10'
+                  ? 'bg-accent text-[#0F172A] dark:text-[#0F172A] text-white'
+                  : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-white/10'
               }`}
             >
               All ({assets.length})
@@ -353,11 +400,11 @@ function ContextDetail() {
                 onClick={() => setSelectedType(type as AssetType)}
                 className={`px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2 ${
                   selectedType === type
-                    ? 'bg-accent text-[#0F172A]'
-                    : 'bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white border border-white/10'
+                    ? 'bg-accent text-[#0F172A] dark:text-[#0F172A] text-white'
+                    : 'bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-white/10'
                 }`}
               >
-                <span className={`material-symbols-outlined text-sm ${selectedType === type ? 'text-[#0F172A]' : getTypeColor(type)}`}>
+                <span className={`material-symbols-outlined text-sm ${selectedType === type ? 'text-[#0F172A] dark:text-[#0F172A] text-white' : getTypeColor(type)}`}>
                   {getTypeIcon(type)}
                 </span>
                 {getTypeLabel(type)} ({typeCounts[type]})
@@ -369,7 +416,7 @@ function ContextDetail() {
           <div className="flex gap-2">
             <button
               onClick={() => setGroupByType(!groupByType)}
-              className="px-4 py-2 rounded-lg bg-white/5 text-slate-400 hover:bg-white/10 hover:text-white border border-white/10 transition-all flex items-center gap-2"
+              className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-slate-400 hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white border border-gray-300 dark:border-white/10 transition-all flex items-center gap-2"
               title={groupByType ? "Switch to list view" : "Switch to grouped view"}
             >
               <span className="material-symbols-outlined text-sm">
@@ -380,19 +427,19 @@ function ContextDetail() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortOption)}
-              className="px-4 py-2 rounded-lg bg-white/5 text-slate-400 border border-white/10 focus:outline-none focus:ring-2 focus:ring-accent hover:bg-white/10 hover:text-white transition-all"
+              className="px-4 py-2 rounded-lg bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-white border border-gray-300 dark:border-white/10 focus:outline-none focus:ring-2 focus:ring-accent hover:bg-gray-200 dark:hover:bg-white/10 hover:text-gray-900 dark:hover:text-white transition-all"
             >
-              <option value="type">Sort by Type</option>
-              <option value="name">Sort by Name</option>
-              <option value="date-desc">Newest First</option>
-              <option value="date-asc">Oldest First</option>
+              <option value="type" className="bg-gray-100 dark:bg-[#1E293B] text-gray-700 dark:text-white">Sort by Type</option>
+              <option value="name" className="bg-gray-100 dark:bg-[#1E293B] text-gray-700 dark:text-white">Sort by Name</option>
+              <option value="date-desc" className="bg-gray-100 dark:bg-[#1E293B] text-gray-700 dark:text-white">Newest First</option>
+              <option value="date-asc" className="bg-gray-100 dark:bg-[#1E293B] text-gray-700 dark:text-white">Oldest First</option>
             </select>
           </div>
         </div>
 
         {/* Results Info */}
         {(searchQuery || selectedType !== 'all') && (
-          <p className="mb-4 text-sm text-slate-400">
+          <p className="mb-4 text-sm text-slate-400 dark:text-slate-400 text-gray-600">
             Found {filteredAssets.length} {filteredAssets.length === 1 ? 'asset' : 'assets'}
           </p>
         )}
@@ -400,7 +447,7 @@ function ContextDetail() {
         {/* Assets Display */}
         {filteredAssets.length === 0 ? (
           <div className="text-center py-12">
-            <p className="text-white/60 text-lg">
+            <p className="text-gray-600 dark:text-white/60 text-lg">
               {searchQuery || selectedType !== 'all' ? 'No assets match your filters' : 'No assets captured'}
             </p>
           </div>
@@ -413,16 +460,21 @@ function ContextDetail() {
                   <span className={`material-symbols-outlined text-2xl ${getTypeColor(type)}`}>
                     {getTypeIcon(type)}
                   </span>
-                  <h2 className="text-2xl font-bold text-white">
+                  <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
                     {getTypeLabel(type)}
                   </h2>
-                  <span className="text-slate-400 text-sm">
+                  <span className="text-gray-600 dark:text-slate-400 text-sm">
                     ({groupedAssets[type].length})
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {groupedAssets[type].map((asset) => (
-                    <AssetCard key={asset.id} asset={asset} />
+                    <AssetCard 
+                      key={asset.id} 
+                      asset={asset}
+                      onArchive={() => loadCaptureDetails()}
+                      onDelete={() => loadCaptureDetails()}
+                    />
                   ))}
                 </div>
               </div>
@@ -432,7 +484,12 @@ function ContextDetail() {
           /* List View */
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredAssets.map((asset) => (
-              <AssetCard key={asset.id} asset={asset} />
+              <AssetCard 
+                key={asset.id} 
+                asset={asset}
+                onArchive={() => loadCaptureDetails()}
+                onDelete={() => loadCaptureDetails()}
+              />
             ))}
           </div>
         )}

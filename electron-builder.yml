@@ -17,6 +17,8 @@ win:
     - portable
   icon: src/renderer/public/assets/logo.png
   artifactName: ${productName}-Setup-${version}.${ext}
+  signAndEditExecutable: false
+  forceCodeSigning: false
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

@@ -1374,14 +1374,16 @@ ipcMain.handle(
       }
     }
     
-    // Validate metadata is valid JSON (fix any corrupted entries)
+    // Validate metadata is valid JSON (fix any corrupted entries silently)
+    let corruptedCount = 0;
+    let missingTitleCount = 0;
     const validAssets = assets.map((asset: any) => {
       if (asset.metadata) {
         try {
           // Try to parse to validate it's valid JSON
           JSON.parse(asset.metadata);
         } catch (error) {
-          safeError(`Invalid metadata for asset ${asset.id}, fixing...`);
+          corruptedCount++;
           // If metadata is invalid, replace with minimal valid metadata
           asset.metadata = JSON.stringify({
             asset_type: asset.asset_type,
@@ -1391,16 +1393,23 @@ ipcMain.handle(
       }
       // Ensure all required fields are present
       if (!asset.title) {
-        safeError(`Asset ${asset.id} missing title, setting default`);
+        missingTitleCount++;
         asset.title = `Untitled ${asset.asset_type || 'asset'}`;
       }
       if (!asset.asset_type) {
-        safeError(`Asset ${asset.id} missing asset_type`);
         asset.asset_type = 'other';
       }
       return asset;
     });
-    
+
+    // Log summary of fixes (only if issues were found)
+    if (corruptedCount > 0) {
+      safeLog(`[Database] Fixed ${corruptedCount} asset(s) with corrupted metadata`);
+    }
+    if (missingTitleCount > 0) {
+      safeLog(`[Database] Fixed ${missingTitleCount} asset(s) with missing titles`);
+    }
+
     // Log sample asset for debugging
     if (validAssets.length > 0) {
       const sample = validAssets[0];

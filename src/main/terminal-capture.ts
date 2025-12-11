@@ -3168,6 +3168,20 @@ function createStartupScript(session: TerminalSession): string | null {
         // npm dev server - run in background so it doesn't block Claude Code
         commands.push('# Restarting development server in background...');
         if (session.shellType === 'PowerShell') {
+          // Check for common dev server ports and kill if in use
+          commands.push('# Checking for port conflicts...');
+          commands.push('$commonPorts = @(5173, 3000, 8080, 4200, 5000)');
+          commands.push('foreach ($port in $commonPorts) {');
+          commands.push('  $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue');
+          commands.push('  if ($conn) {');
+          commands.push('    $proc = Get-Process -Id $conn[0].OwningProcess -ErrorAction SilentlyContinue');
+          commands.push('    if ($proc) {');
+          commands.push('      Write-Host "Killing process on port ${port}: $($proc.Name)" -ForegroundColor Yellow');
+          commands.push('      Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue');
+          commands.push('    }');
+          commands.push('  }');
+          commands.push('}');
+          commands.push('Start-Sleep -Milliseconds 500');
           commands.push('Start-Process powershell -ArgumentList "-NoExit", "-Command", "npm run dev" -WindowStyle Normal');
         } else {
           commands.push('start cmd /k "npm run dev"');
@@ -3175,6 +3189,15 @@ function createStartupScript(session: TerminalSession): string | null {
       } else if (commandLine.includes('npm') && commandLine.includes('start')) {
         commands.push('# Restarting application in background...');
         if (session.shellType === 'PowerShell') {
+          // Similar port conflict handling
+          commands.push('$commonPorts = @(3000, 5173, 8080)');
+          commands.push('foreach ($port in $commonPorts) {');
+          commands.push('  $conn = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue');
+          commands.push('  if ($conn) {');
+          commands.push('    Stop-Process -Id $conn[0].OwningProcess -Force -ErrorAction SilentlyContinue');
+          commands.push('  }');
+          commands.push('}');
+          commands.push('Start-Sleep -Milliseconds 500');
           commands.push('Start-Process powershell -ArgumentList "-NoExit", "-Command", "npm start" -WindowStyle Normal');
         } else {
           commands.push('start cmd /k "npm start"');

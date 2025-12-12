@@ -11,6 +11,8 @@ files:
   - "!node_modules/electron-builder/**"
 npmRebuild: false
 buildDependenciesFromSource: false
+asarUnpack:
+  - "**/node_modules/sql.js/**/*"
 win:
   target:
     - nsis

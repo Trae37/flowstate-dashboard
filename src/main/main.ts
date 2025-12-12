@@ -102,6 +102,7 @@ const __filename = app.isPackaged
   : fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+
 let mainWindow: BrowserWindow | null = null;
 let powerStatus: 'ac' | 'battery' | 'unknown' = 'unknown';
 
@@ -892,7 +893,7 @@ function createWindow() {
         }
       });
     }
-    
+
     if (isDev) {
       mainWindow.webContents.openDevTools();
     }

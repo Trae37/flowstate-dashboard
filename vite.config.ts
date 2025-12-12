@@ -5,6 +5,7 @@ import path from 'path';
 export default defineConfig({
   plugins: [react()],
   root: path.join(__dirname, 'src/renderer'),
+  base: './', // CRITICAL: Use relative paths for Electron production builds
   build: {
     outDir: path.join(__dirname, 'dist/renderer'),
     emptyOutDir: true,

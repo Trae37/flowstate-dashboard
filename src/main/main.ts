@@ -95,7 +95,11 @@ if (app.isPackaged) {
   console.log('[Sentry] Initialized for production error tracking');
 }
 
-const __filename = fileURLToPath(import.meta.url);
+// In production (asar), we need to use app.getAppPath() for correct paths
+// In development, we can use import.meta.url
+const __filename = app.isPackaged
+  ? path.join(app.getAppPath(), 'dist', 'main', 'main.js')
+  : fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | null = null;
@@ -407,10 +411,10 @@ function createWindow() {
         "object-src 'none'; " +
         "base-uri 'self'; " +
         "form-action 'self';"
-      : // Production: Strict CSP without unsafe-eval or unsafe-inline
+      : // Production: Strict CSP (but allow inline styles for Vite-generated assets)
         "default-src 'self'; " +
         "script-src 'self'; " +
-        "style-src 'self' https://fonts.googleapis.com; " +
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " + // Allow inline styles for Vite
         "font-src 'self' https://fonts.gstatic.com; " +
         "img-src 'self' data: https:; " +
         "connect-src 'self' https://o4510468375773184.ingest.us.sentry.io; " +

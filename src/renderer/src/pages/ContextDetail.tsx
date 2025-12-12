@@ -350,7 +350,12 @@ function ContextDetail() {
         </div>
 
         <div className="mb-8" data-tour="detail-view-header">
-          <h1 className="text-5xl font-bold text-gray-900 dark:text-white mb-3">{capture.name}</h1>
+          <div className="flex items-center gap-3 mb-3">
+            <h1 className="text-5xl font-bold text-gray-900 dark:text-white">{capture.name}</h1>
+            <span className="text-sm text-gray-500 dark:text-slate-500 font-mono px-3 py-1.5 bg-gray-100 dark:bg-white/5 rounded-lg">
+              #{capture.id}
+            </span>
+          </div>
           <p className="text-gray-600 dark:text-slate-400 text-lg">
             Captured on {formatFullDateTime(capture.created_at)}
           </p>

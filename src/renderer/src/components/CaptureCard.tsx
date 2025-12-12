@@ -118,7 +118,14 @@ function CaptureCard({ capture, onArchive, onDelete }: CaptureCardProps) {
       >
         <div className="p-5">
           <div className="flex items-start justify-between mb-2">
-            <h3 className="font-bold text-gray-900 dark:text-white text-lg flex-1">{capture.name}</h3>
+            <div className="flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <h3 className="font-bold text-gray-900 dark:text-white text-lg">{capture.name}</h3>
+                <span className="text-xs text-gray-500 dark:text-slate-500 font-mono px-2 py-0.5 bg-gray-100 dark:bg-white/5 rounded">
+                  #{capture.id}
+                </span>
+              </div>
+            </div>
             <button
               onClick={(e) => {
                 e.preventDefault();

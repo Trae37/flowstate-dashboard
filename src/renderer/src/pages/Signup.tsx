@@ -70,7 +70,7 @@ function Signup() {
       <div className="w-full max-w-md px-6">
         <div className="bg-white/80 dark:bg-[#1E293B]/80 backdrop-blur-sm rounded-2xl p-8 border border-gray-200 dark:border-white/10">
           <div className="flex justify-center">
-            <img src="/assets/logo.png" alt="FlowState Logo" className="w-48 h-48 object-contain" />
+            <img src="./assets/logo.png" alt="FlowState Logo" className="w-48 h-48 object-contain" />
           </div>
 
           <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2 text-center">Create your account</h1>

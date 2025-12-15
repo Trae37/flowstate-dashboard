@@ -46,6 +46,7 @@ interface Window {
     sessionCreate: (userId: number, name?: string, description?: string) => Promise<{ success: boolean; data?: any; error?: string }>;
     sessionUpdate: (sessionId: number, name?: string, description?: string) => Promise<{ success: boolean; error?: string }>;
     sessionArchive: (sessionId: number) => Promise<{ success: boolean; error?: string }>;
+    sessionUnarchive: (sessionId: number) => Promise<{ success: boolean; error?: string }>;
     sessionDelete: (sessionId: number) => Promise<{ success: boolean; error?: string }>;
     sessionGetAutoRecovered: (userId: number) => Promise<{ success: boolean; data?: any; error?: string }>;
     // Archive management
@@ -70,6 +71,22 @@ interface Window {
       title?: string;
       body?: string;
       timestamp: string;
+    }) => void) => () => void;
+    // Auto-updater methods
+    updateDownload?: () => Promise<{ success: boolean; error?: string }>;
+    updateInstall?: () => Promise<{ success: boolean; error?: string }>;
+    onUpdateAvailable?: (callback: (info: {
+      version: string;
+      releaseNotes?: string;
+      releaseDate?: string;
+    }) => void) => () => void;
+    onUpdateDownloadProgress?: (callback: (progress: {
+      percent: number;
+      transferred: number;
+      total: number;
+    }) => void) => () => void;
+    onUpdateDownloaded?: (callback: (info: {
+      version: string;
     }) => void) => () => void;
   };
 }

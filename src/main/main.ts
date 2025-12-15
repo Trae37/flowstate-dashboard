@@ -47,12 +47,16 @@ if (typeof process !== 'undefined') {
 }
 
 import { app, BrowserWindow, ipcMain, powerMonitor, dialog } from 'electron';
+import autoUpdater from 'electron-updater';
 import * as Sentry from '@sentry/electron/main';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { initDatabase } from './database.js';
 import { captureWorkspace } from './capture.js';
 import { restoreWorkspace, restoreAsset } from './restore.js';
+
+// Extract autoUpdater from the default export
+const { autoUpdater: updater } = autoUpdater;
 
 // Initialize Sentry for crash reporting
 // Only in production mode to avoid noise during development
@@ -379,6 +383,73 @@ function safeError(...args: any[]): void {
   }
 }
 
+/**
+ * Configure and check for app updates using electron-updater
+ * Only checks for updates in production builds
+ */
+function setupAutoUpdater() {
+  // Only enable auto-updater in production
+  if (!app.isPackaged) {
+    safeLog('[AutoUpdater] Skipping in development mode');
+    return;
+  }
+
+  // Configure auto-updater
+  updater.autoDownload = false; // Don't auto-download, let user choose
+  updater.autoInstallOnAppQuit = true; // Auto-install when app quits
+
+  // Log updater events
+  updater.on('checking-for-update', () => {
+    safeLog('[AutoUpdater] Checking for updates...');
+  });
+
+  updater.on('update-available', (info) => {
+    safeLog('[AutoUpdater] Update available:', info.version);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-available', {
+        version: info.version,
+        releaseNotes: info.releaseNotes,
+        releaseDate: info.releaseDate,
+      });
+    }
+  });
+
+  updater.on('update-not-available', () => {
+    safeLog('[AutoUpdater] No updates available');
+  });
+
+  updater.on('error', (error) => {
+    safeError('[AutoUpdater] Error:', error);
+  });
+
+  updater.on('download-progress', (progressObj) => {
+    safeLog(`[AutoUpdater] Download progress: ${progressObj.percent.toFixed(2)}%`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-download-progress', {
+        percent: progressObj.percent,
+        transferred: progressObj.transferred,
+        total: progressObj.total,
+      });
+    }
+  });
+
+  updater.on('update-downloaded', (info) => {
+    safeLog('[AutoUpdater] Update downloaded:', info.version);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-downloaded', {
+        version: info.version,
+      });
+    }
+  });
+
+  // Check for updates on app start (after a short delay)
+  setTimeout(() => {
+    updater.checkForUpdates().catch((error) => {
+      safeError('[AutoUpdater] Failed to check for updates:', error);
+    });
+  }, 3000); // Wait 3 seconds after app start
+}
+
 function createWindow() {
   const isDev = !app.isPackaged;
 
@@ -388,15 +459,17 @@ function createWindow() {
     minWidth: 1200,
     minHeight: 700,
     backgroundColor: '#1A1A1D',
+    frame: false, // Remove default title bar
+    titleBarStyle: 'hidden', // Hide title bar while keeping window controls on macOS
     webPreferences: {
-      preload: path.join(__dirname, 'preload/preload.js'),
+      preload: path.join(__dirname, 'preload/preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true, // Security: Enable sandbox for renderer process
       webSecurity: !isDev, // Only disable in development for localhost
       allowRunningInsecureContent: false,
     },
-    show: true, // Show immediately so user can see what's happening
+    show: false, // Don't show immediately - wait for ready-to-show event to avoid crashes
   });
 
   // Security: Set strict CSP headers based on environment
@@ -431,12 +504,8 @@ function createWindow() {
     });
   });
 
-  // Force window to be visible immediately
-  if (mainWindow) {
-    mainWindow.show();
-    mainWindow.focus();
-    safeLog('[Main] Window created and shown immediately');
-  }
+  // Don't force window visible immediately - let ready-to-show event handle it
+  safeLog('[Main] Window created, waiting for ready-to-show event');
 
   // Security: Limit navigation to prevent opening untrusted URLs
   mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
@@ -509,7 +578,7 @@ function createWindow() {
 
   // Ensure window is always visible
   mainWindow.once('ready-to-show', () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
       mainWindow.focus();
       safeLog('[Main] Window shown after ready-to-show event');
@@ -559,7 +628,7 @@ function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     safeError('[Main] Failed to load page:', errorCode, errorDescription);
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show(); // Show window even if load failed
       
       // Show error message in window
@@ -625,7 +694,7 @@ function createWindow() {
     mainWindow.webContents.on('did-finish-load', () => {
       safeLog('[Main] Page finished loading successfully');
       // Ensure window is visible and focused after load
-      if (mainWindow) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
         if (!mainWindow.isVisible()) {
           mainWindow.show();
         }
@@ -982,7 +1051,8 @@ app.whenReady().then(async () => {
 
     createWindow();
     initializePowerMonitor();
-    
+    setupAutoUpdater();
+
     // Set up background task to check for new day sessions and auto-capture
     setupNewDayAutoCapture();
     
@@ -1256,6 +1326,64 @@ ipcMain.handle(
 );
 
 ipcMain.handle('get-power-status', () => powerStatus);
+
+// Window controls for frameless window
+ipcMain.handle('window-minimize', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.minimize();
+  }
+});
+
+ipcMain.handle('window-maximize', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  }
+});
+
+ipcMain.handle('window-close', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close();
+  }
+});
+
+ipcMain.handle('window-is-maximized', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return mainWindow.isMaximized();
+  }
+  return false;
+});
+
+// Auto-updater IPC handlers
+ipcMain.handle('update-download', async () => {
+  try {
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates only available in production' };
+    }
+    await updater.downloadUpdate();
+    return { success: true };
+  } catch (error: any) {
+    safeError('[AutoUpdater] Failed to download update:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('update-install', () => {
+  try {
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates only available in production' };
+    }
+    // This will quit the app and install the update
+    updater.quitAndInstall(false, true);
+    return { success: true };
+  } catch (error: any) {
+    safeError('[AutoUpdater] Failed to install update:', error);
+    return { success: false, error: error.message };
+  }
+});
 
 ipcMain.handle('get-captures', async (_, payload?: { userId: number; sessionId?: number; includeArchived?: boolean }) => {
   try {
@@ -1993,6 +2121,27 @@ ipcMain.handle('session-archive', async (_, sessionId: number) => {
   } catch (error) {
     const { handleError } = await import('./utils/errors.js');
     safeError('[Main IPC] Archive session error:', error);
+    return handleError(error);
+  }
+});
+
+ipcMain.handle('session-unarchive', async (_, sessionId: number) => {
+  try {
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+
+    // Validate sessionId
+    if (typeof sessionId !== 'number' || !validateId(sessionId)) {
+      return { success: false, error: 'Invalid sessionId', code: ErrorCode.INVALID_INPUT };
+    }
+
+    safeLog(`[Main IPC] Unarchive session ${sessionId}`);
+    const { unarchiveWorkSession } = await import('./session-management.js');
+    const result = unarchiveWorkSession(sessionId);
+    return { success: result };
+  } catch (error) {
+    const { handleError } = await import('./utils/errors.js');
+    safeError('[Main IPC] Unarchive session error:', error);
     return handleError(error);
   }
 });

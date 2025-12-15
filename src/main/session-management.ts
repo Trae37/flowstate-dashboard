@@ -383,6 +383,43 @@ export function archiveWorkSession(sessionId: number): boolean {
 }
 
 /**
+ * Unarchive a work session and all its captures/assets
+ * Reverses the archiving operation by setting archived = 0 and archived_at = NULL
+ */
+export function unarchiveWorkSession(sessionId: number): boolean {
+  try {
+    // Unarchive the session
+    prepare(`
+      UPDATE work_sessions
+      SET archived = 0, archived_at = NULL
+      WHERE id = ?
+    `).run(sessionId);
+
+    // Unarchive all captures in this session
+    prepare(`
+      UPDATE captures
+      SET archived = 0, archived_at = NULL
+      WHERE session_id = ?
+    `).run(sessionId);
+
+    // Unarchive all assets in captures from this session
+    prepare(`
+      UPDATE assets
+      SET archived = 0, archived_at = NULL
+      WHERE capture_id IN (
+        SELECT id FROM captures WHERE session_id = ?
+      )
+    `).run(sessionId);
+
+    logger.info(`[Session Management] Unarchived session ${sessionId} and all its captures/assets`);
+    return true;
+  } catch (error) {
+    logger.error('[Session Management] Error unarchiving session:', error);
+    return false;
+  }
+}
+
+/**
  * Delete a work session and all its captures/assets
  */
 export function deleteWorkSession(sessionId: number): boolean {

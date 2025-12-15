@@ -27,7 +27,7 @@ export async function initDatabase() {
         return path.join(__dirname, '../../node_modules/sql.js/dist', file);
       } else {
         // In production, resources are packaged differently
-        return path.join(process.resourcesPath, 'node_modules/sql.js/dist', file);
+        return path.join(process.resourcesPath, 'app.asar.unpacked/node_modules/sql.js/dist', file);
       }
     }
   });

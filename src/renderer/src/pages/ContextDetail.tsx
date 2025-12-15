@@ -349,6 +349,13 @@ function ContextDetail() {
           </div>
         </div>
 
+        {/* Page Title */}
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold text-gray-600 dark:text-slate-400 uppercase tracking-wide">
+            Capture Details
+          </h2>
+        </div>
+
         <div className="mb-8" data-tour="detail-view-header">
           <div className="flex items-center gap-3 mb-3">
             <h1 className="text-5xl font-bold text-gray-900 dark:text-white">{capture.name}</h1>

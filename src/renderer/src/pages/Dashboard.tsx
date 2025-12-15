@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Header from '../components/Header';
 import CaptureCard from '../components/CaptureCard';
@@ -44,6 +44,7 @@ interface CaptureProgress {
 }
 
 function Dashboard() {
+  const navigate = useNavigate();
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentCapture, setCurrentCapture] = useState<Capture | null>(null);
@@ -741,11 +742,23 @@ function Dashboard() {
 
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
         <div className="mx-auto max-w-7xl">
+          {/* Page Title */}
+          <div className="mb-8">
+            <h2 className="text-sm font-semibold text-gray-600 dark:text-slate-400 uppercase tracking-wide">
+              Dashboard
+            </h2>
+          </div>
+
           {currentCapture && (
             <div className="mb-8" data-tour="current-workspace">
               <header className="mb-6 flex items-start justify-between">
                 <div>
-                  <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Current Workspace Capture</h1>
+                  <div className="flex items-center gap-3 mb-2">
+                    <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Current Workspace Capture</h1>
+                    <span className="text-sm font-semibold px-3 py-1.5 bg-accent/10 text-accent rounded-lg">
+                      Most Recent - #0
+                    </span>
+                  </div>
                   <p className="text-gray-600 dark:text-slate-400">
                     Last updated: {formatTimeAgo(currentCapture.created_at)} (Auto Refresh)
                   </p>
@@ -951,6 +964,15 @@ function Dashboard() {
                   ))
                 )}
               </div>
+
+              {/* View Details Button for Current Capture */}
+              <button
+                onClick={() => navigate(`/context/${currentCapture.id}`)}
+                className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-accent hover:bg-accent/90 text-white dark:text-[#0F172A] font-semibold rounded-lg transition-colors"
+              >
+                <span>View Details</span>
+                <span className="material-symbols-outlined text-sm">arrow_forward</span>
+              </button>
             </div>
           )}
 
@@ -962,8 +984,9 @@ function Dashboard() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" key={`captures-${refreshKey}`}>
                 {historyCaptures.slice(0, 4).map((capture, index) => (
                   <div key={`capture-${capture.id}-${capture.created_at}-${refreshKey}`} data-tour={index === 0 ? "capture-card" : undefined}>
-                    <CaptureCard 
-                      capture={capture} 
+                    <CaptureCard
+                      capture={capture}
+                      captureNumber={index + 1}
                       onArchive={() => loadCaptures()}
                       onDelete={() => loadCaptures()}
                     />

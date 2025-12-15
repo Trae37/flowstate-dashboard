@@ -13,6 +13,7 @@ interface Capture {
 
 interface CaptureCardProps {
   capture: Capture;
+  captureNumber?: number;
   onArchive?: () => void;
   onDelete?: () => void;
 }
@@ -25,7 +26,7 @@ interface AssetCounts {
   total: number;
 }
 
-function CaptureCard({ capture, onArchive, onDelete }: CaptureCardProps) {
+function CaptureCard({ capture, captureNumber, onArchive, onDelete }: CaptureCardProps) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [assetCounts, setAssetCounts] = useState<AssetCounts | null>(null);
@@ -121,8 +122,13 @@ function CaptureCard({ capture, onArchive, onDelete }: CaptureCardProps) {
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-1">
                 <h3 className="font-bold text-gray-900 dark:text-white text-lg">{capture.name}</h3>
-                <span className="text-xs text-gray-500 dark:text-slate-500 font-mono px-2 py-0.5 bg-gray-100 dark:bg-white/5 rounded">
-                  #{capture.id}
+                {captureNumber !== undefined && (
+                  <span className="text-xs font-semibold px-2 py-0.5 bg-gray-300 dark:bg-slate-600 text-gray-700 dark:text-slate-200 rounded">
+                    #{captureNumber}
+                  </span>
+                )}
+                <span className="w-6 h-6 flex items-center justify-center rounded-full bg-gray-100 dark:bg-white/5 text-xs text-gray-500 dark:text-slate-500 font-mono" title={`Database ID: ${capture.id}`}>
+                  {capture.id}
                 </span>
               </div>
             </div>
@@ -178,6 +184,19 @@ function CaptureCard({ capture, onArchive, onDelete }: CaptureCardProps) {
               </div>
             </div>
           )}
+
+          {/* View Details Button */}
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              navigate(`/context/${capture.id}`);
+            }}
+            className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-accent hover:bg-accent/90 text-white dark:text-[#0F172A] font-semibold rounded-lg transition-colors"
+          >
+            <span>View Details</span>
+            <span className="material-symbols-outlined text-sm">arrow_forward</span>
+          </button>
         </div>
       </Link>
 

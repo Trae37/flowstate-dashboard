@@ -43,6 +43,15 @@
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
     }
+    /* Electron window dragging */
+    .draggable-area {
+      -webkit-app-region: drag;
+      app-region: drag;
+    }
+    .no-drag-area {
+      -webkit-app-region: no-drag;
+      app-region: no-drag;
+    }
   </style>
 </head>
 <body>

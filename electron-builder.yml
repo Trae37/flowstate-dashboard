@@ -17,7 +17,8 @@ win:
   target:
     - nsis
     - portable
-  icon: src/renderer/public/assets/logo.png
+    - zip
+  icon: build/icon.png
   artifactName: ${productName}-Setup-${version}.${ext}
   signAndEditExecutable: false
   forceCodeSigning: false
@@ -43,4 +44,7 @@ linux:
   icon: build/icon.png
   category: Development
   artifactName: ${productName}-${version}-${arch}.${ext}
-publish: null
+publish:
+  provider: github
+  owner: CHANGE_ME
+  repo: flowstate-dashboard

@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sessionCreate: (userId, name, description) => ipcRenderer.invoke('session-create', userId, name, description),
   sessionUpdate: (sessionId, name, description) => ipcRenderer.invoke('session-update', sessionId, name, description),
   sessionArchive: (sessionId) => ipcRenderer.invoke('session-archive', sessionId),
+  sessionUnarchive: (sessionId) => ipcRenderer.invoke('session-unarchive', sessionId),
   sessionDelete: (sessionId) => ipcRenderer.invoke('session-delete', sessionId),
   sessionGetAutoRecovered: (userId) => ipcRenderer.invoke('session-get-auto-recovered', userId),
   // Archive management methods
@@ -60,5 +61,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event, message) => callback(message);
     ipcRenderer.on('restore-progress', handler);
     return () => ipcRenderer.removeListener('restore-progress', handler);
+  },
+  // Window controls for frameless window
+  windowMinimize: () => ipcRenderer.invoke('window-minimize'),
+  windowMaximize: () => ipcRenderer.invoke('window-maximize'),
+  windowClose: () => ipcRenderer.invoke('window-close'),
+  windowIsMaximized: () => ipcRenderer.invoke('window-is-maximized'),
+  // Auto-updater methods
+  updateDownload: () => ipcRenderer.invoke('update-download'),
+  updateInstall: () => ipcRenderer.invoke('update-install'),
+  onUpdateAvailable: (callback) => {
+    const handler = (_event, info) => callback(info);
+    ipcRenderer.on('update-available', handler);
+    return () => ipcRenderer.removeListener('update-available', handler);
+  },
+  onUpdateDownloadProgress: (callback) => {
+    const handler = (_event, progress) => callback(progress);
+    ipcRenderer.on('update-download-progress', handler);
+    return () => ipcRenderer.removeListener('update-download-progress', handler);
+  },
+  onUpdateDownloaded: (callback) => {
+    const handler = (_event, info) => callback(info);
+    ipcRenderer.on('update-downloaded', handler);
+    return () => ipcRenderer.removeListener('update-downloaded', handler);
   },
 });

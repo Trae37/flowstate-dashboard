@@ -83,7 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem(SESSION_STORAGE_KEY);
       }
     } catch (error) {
-      console.error('Error loading session:', error);
+      console.error('[AuthContext] Error loading session:', error);
       localStorage.removeItem(SESSION_STORAGE_KEY);
     } finally {
       setLoading(false);

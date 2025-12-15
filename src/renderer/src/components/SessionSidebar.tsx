@@ -396,19 +396,25 @@ function SessionSidebar({
         {/* Top Section - Logo and Create Button */}
         <div className="p-4 border-b border-gray-200 dark:border-white/10">
           <div className="flex justify-center mb-0.5">
-            <img src="/assets/logo.png" alt="FlowState Logo" className="w-24 h-24 object-contain" />
+            <img src="./assets/logo.png" alt="FlowState Logo" className="w-24 h-24 object-contain" />
           </div>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="w-full h-12 rounded-lg bg-[#1E293B] dark:bg-[#0F172A] hover:bg-[#334155] dark:hover:bg-[#0F172A]/80 border border-gray-300 dark:border-white/10 flex items-center justify-center transition-colors shadow-lg"
-            aria-label="Create new session"
-          >
-            <span className="text-xl text-white font-light">+</span>
-          </button>
+          <div>
+            <p className="text-xs text-gray-600 dark:text-slate-400 text-center mb-2">Create New Session</p>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="w-full h-12 rounded-lg bg-[#1E293B] dark:bg-[#0F172A] hover:bg-[#334155] dark:hover:bg-[#0F172A]/80 border border-gray-300 dark:border-white/10 flex items-center justify-center transition-colors shadow-lg"
+              aria-label="Create new session"
+            >
+              <span className="text-xl text-white font-light">+</span>
+            </button>
+          </div>
         </div>
 
         {/* Middle Section - Sessions List */}
         <div className="flex-1 overflow-y-auto px-3 py-3" style={{ maxHeight: 'calc(100vh - 200px)' }}>
+          {!loading && sessions.length > 0 && (
+            <h3 className="text-xs font-bold text-gray-900 dark:text-white uppercase tracking-wider mb-3 px-2">Sessions</h3>
+          )}
           {loading ? (
             <div className="text-center text-gray-600 dark:text-slate-500 text-xs py-8">Loading...</div>
           ) : sessions.length === 0 ? (

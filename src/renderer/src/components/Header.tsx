@@ -111,6 +111,14 @@ function Header({
                       )}
                     </div>
                     <div className="p-2">
+                      <a
+                        href="mailto:support@inflowstate.app?subject=FlowState Dashboard Feedback"
+                        onClick={() => setShowUserMenu(false)}
+                        className="w-full text-left px-3 py-2 text-white dark:text-white text-gray-900 hover:bg-white/10 dark:hover:bg-white/10 hover:bg-gray-100 rounded-lg transition-colors flex items-center gap-2 text-sm"
+                      >
+                        <span className="material-symbols-outlined text-sm">feedback</span>
+                        Send Feedback
+                      </a>
                       <button
                         onClick={async () => {
                           setShowUserMenu(false);

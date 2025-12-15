@@ -41,7 +41,13 @@ function Archive() {
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
-  
+
+  // Menu and action states
+  const [showSessionMenu, setShowSessionMenu] = useState<number | null>(null);
+  const [showCaptureMenu, setShowCaptureMenu] = useState<number | null>(null);
+  const [sessionActionLoading, setSessionActionLoading] = useState<number | null>(null);
+  const [captureActionLoading, setCaptureActionLoading] = useState<number | null>(null);
+
   // Decode the date parameter if present
   const selectedDate = dateParam ? decodeURIComponent(dateParam) : null;
 
@@ -127,6 +133,103 @@ function Archive() {
     return captures.filter(c => c.session_id === sessionId);
   };
 
+  // Session handlers
+  const handleUnarchiveSession = async (sessionId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user?.id || sessionActionLoading) return;
+
+    setSessionActionLoading(sessionId);
+    try {
+      const result = await window.electronAPI.sessionUnarchive(sessionId);
+      if (result.success) {
+        await loadArchivedData();
+      } else {
+        alert(`Failed to unarchive session: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to unarchive session:', error);
+      alert('Failed to unarchive session');
+    } finally {
+      setSessionActionLoading(null);
+      setShowSessionMenu(null);
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: number, sessionName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user?.id || sessionActionLoading) return;
+
+    if (!confirm(`Are you sure you want to delete the session "${sessionName}"? This will also delete all captures and assets in this session. This action cannot be undone.`)) {
+      return;
+    }
+
+    setSessionActionLoading(sessionId);
+    try {
+      const result = await window.electronAPI.sessionDelete(sessionId);
+      if (result.success) {
+        await loadArchivedData();
+      } else {
+        alert(`Failed to delete session: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+      alert('Failed to delete session');
+    } finally {
+      setSessionActionLoading(null);
+      setShowSessionMenu(null);
+    }
+  };
+
+  // Capture handlers
+  const handleUnarchiveCapture = async (captureId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user?.id || captureActionLoading) return;
+
+    setCaptureActionLoading(captureId);
+    try {
+      const result = await window.electronAPI.unarchiveCapture({
+        captureId,
+        userId: user.id,
+      });
+      if (result.success) {
+        await loadArchivedData();
+      } else {
+        alert(`Failed to unarchive capture: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to unarchive capture:', error);
+      alert('Failed to unarchive capture');
+    } finally {
+      setCaptureActionLoading(null);
+      setShowCaptureMenu(null);
+    }
+  };
+
+  const handleDeleteCapture = async (captureId: number, captureName: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!user?.id || captureActionLoading) return;
+
+    if (!confirm(`Are you sure you want to delete "${captureName}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    setCaptureActionLoading(captureId);
+    try {
+      const result = await window.electronAPI.deleteCapture(captureId, user.id);
+      if (result.success) {
+        await loadArchivedData();
+      } else {
+        alert(`Failed to delete capture: ${result.error}`);
+      }
+    } catch (error) {
+      console.error('Failed to delete capture:', error);
+      alert('Failed to delete capture');
+    } finally {
+      setCaptureActionLoading(null);
+      setShowCaptureMenu(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-screen">
@@ -199,10 +302,10 @@ function Archive() {
                       return (
                         <div
                           key={session.id}
-                          className="bg-gray-200 dark:bg-[#1E293B] border border-gray-300 dark:border-white/10 rounded-lg p-4"
+                          className="relative bg-gray-200 dark:bg-[#1E293B] border border-gray-300 dark:border-white/10 rounded-lg p-4"
                         >
                           <div className="flex items-start justify-between mb-3">
-                            <div>
+                            <div className="flex-1">
                               <h3 className="text-gray-900 dark:text-white font-medium mb-1">{session.name}</h3>
                               {session.description && (
                                 <p className="text-sm text-gray-600 dark:text-slate-400 mb-2">{session.description}</p>
@@ -221,6 +324,48 @@ function Archive() {
                                 )}
                               </div>
                             </div>
+
+                            {/* Session Menu Button */}
+                            <div className="relative">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowSessionMenu(showSessionMenu === session.id ? null : session.id);
+                                }}
+                                className="ml-2 p-1 rounded hover:bg-white/10 transition-colors"
+                                aria-label="Session options"
+                              >
+                                <span className="material-symbols-outlined text-slate-400 text-sm">more_vert</span>
+                              </button>
+
+                              {/* Session Dropdown Menu */}
+                              {showSessionMenu === session.id && (
+                                <>
+                                  <div
+                                    className="fixed inset-0 z-10"
+                                    onClick={() => setShowSessionMenu(null)}
+                                  />
+                                  <div className="absolute top-8 right-0 z-20 bg-white dark:bg-[#1E293B] border border-gray-300 dark:border-white/10 rounded-lg shadow-xl overflow-hidden min-w-[180px]">
+                                    <button
+                                      onClick={(e) => handleUnarchiveSession(session.id, e)}
+                                      disabled={sessionActionLoading === session.id}
+                                      className="w-full text-left px-4 py-2 text-sm text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-2 disabled:opacity-50"
+                                    >
+                                      <span className="material-symbols-outlined text-sm">unarchive</span>
+                                      {sessionActionLoading === session.id ? 'Unarchiving...' : 'Unarchive Session'}
+                                    </button>
+                                    <button
+                                      onClick={(e) => handleDeleteSession(session.id, session.name, e)}
+                                      disabled={sessionActionLoading === session.id}
+                                      className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors flex items-center gap-2 disabled:opacity-50"
+                                    >
+                                      <span className="material-symbols-outlined text-sm">delete</span>
+                                      {sessionActionLoading === session.id ? 'Deleting...' : 'Delete Session'}
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
                           </div>
 
                           {sessionCaptures.length > 0 && (
@@ -233,10 +378,56 @@ function Archive() {
                                   {sessionCaptures.map((capture) => (
                                     <div
                                       key={capture.id}
-                                      className="text-sm text-white dark:text-slate-300 hover:text-white/80 dark:hover:text-white cursor-pointer p-2 rounded hover:bg-[#334155] dark:hover:bg-white/5"
-                                      onClick={() => navigate(`/context/${capture.id}`)}
+                                      className="relative group"
                                     >
-                                      {capture.name} - {formatFullDateTime(capture.created_at)}
+                                      <div
+                                        className="flex items-center justify-between text-sm text-white dark:text-slate-300 hover:text-white/80 dark:hover:text-white cursor-pointer p-2 rounded hover:bg-[#334155] dark:hover:bg-white/5"
+                                        onClick={() => navigate(`/context/${capture.id}`)}
+                                      >
+                                        <span className="flex-1">
+                                          {capture.name} - {formatFullDateTime(capture.created_at)}
+                                        </span>
+
+                                        {/* Capture Menu Button */}
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setShowCaptureMenu(showCaptureMenu === capture.id ? null : capture.id);
+                                          }}
+                                          className="ml-2 p-1 rounded hover:bg-white/10 transition-colors opacity-0 group-hover:opacity-100"
+                                          aria-label="Capture options"
+                                        >
+                                          <span className="material-symbols-outlined text-slate-400 text-sm">more_vert</span>
+                                        </button>
+                                      </div>
+
+                                      {/* Capture Dropdown Menu */}
+                                      {showCaptureMenu === capture.id && (
+                                        <>
+                                          <div
+                                            className="fixed inset-0 z-30"
+                                            onClick={() => setShowCaptureMenu(null)}
+                                          />
+                                          <div className="absolute top-8 right-0 z-40 bg-white dark:bg-[#1E293B] border border-gray-300 dark:border-white/10 rounded-lg shadow-xl overflow-hidden min-w-[180px]">
+                                            <button
+                                              onClick={(e) => handleUnarchiveCapture(capture.id, e)}
+                                              disabled={captureActionLoading === capture.id}
+                                              className="w-full text-left px-4 py-2 text-sm text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-white/10 transition-colors flex items-center gap-2 disabled:opacity-50"
+                                            >
+                                              <span className="material-symbols-outlined text-sm">unarchive</span>
+                                              {captureActionLoading === capture.id ? 'Unarchiving...' : 'Unarchive Capture'}
+                                            </button>
+                                            <button
+                                              onClick={(e) => handleDeleteCapture(capture.id, capture.name, e)}
+                                              disabled={captureActionLoading === capture.id}
+                                              className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors flex items-center gap-2 disabled:opacity-50"
+                                            >
+                                              <span className="material-symbols-outlined text-sm">delete</span>
+                                              {captureActionLoading === capture.id ? 'Deleting...' : 'Delete Capture'}
+                                            </button>
+                                          </div>
+                                        </>
+                                      )}
                                     </div>
                                   ))}
                                 </div>

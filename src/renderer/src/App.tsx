@@ -1,7 +1,9 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import TitleBar from './components/TitleBar';
+import UpdateNotification from './components/UpdateNotification';
 import Dashboard from './pages/Dashboard';
 import ContextDetail from './pages/ContextDetail';
 import Settings from './pages/Settings';
@@ -93,18 +95,20 @@ function AppRoutes() {
 }
 
 function App() {
-  console.log('[App] Rendering App component...');
-
   return (
     <ErrorBoundary>
       <ThemeProvider>
-        <BrowserRouter>
+        <HashRouter>
           <AuthProvider>
-            <div className="min-h-screen bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50 dark:from-[#0F172A] dark:via-[#1E293B] dark:to-[#0F172A] noise-bg">
-              <AppRoutes />
+            <div className="min-h-screen flex flex-col bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50 dark:from-[#0F172A] dark:via-[#1E293B] dark:to-[#0F172A] noise-bg">
+              <TitleBar />
+              <div className="flex-1">
+                <AppRoutes />
+              </div>
+              <UpdateNotification />
             </div>
           </AuthProvider>
-        </BrowserRouter>
+        </HashRouter>
       </ThemeProvider>
     </ErrorBoundary>
   );

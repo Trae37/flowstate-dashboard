@@ -46,5 +46,5 @@ linux:
   artifactName: ${productName}-${version}-${arch}.${ext}
 publish:
   provider: github
-  owner: CHANGE_ME
+  owner: Trae37
   repo: flowstate-dashboard

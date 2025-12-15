@@ -1,12 +1,8 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { app } from 'electron';
+import { logger } from './utils/logger.js';
 
 const execPromise = promisify(exec);
-
-// Production-silent logging - only log in development
-const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
-const logError = (...args: any[]) => console.error(...args);
 
 export interface NoteSession {
   appName: 'Notion' | 'Notepad' | 'Apple Notes' | 'Unknown';
@@ -47,11 +43,11 @@ async function captureNotionWindows(): Promise<NoteSession[]> {
     const { stdout } = await execPromise('tasklist /FI "IMAGENAME eq Notion.exe" /FO CSV /NH');
     
     if (!stdout || !stdout.includes('Notion.exe')) {
-      log('[Note Capture] Notion desktop app not running on Windows');
+      logger.log('[Note Capture] Notion desktop app not running on Windows');
       return sessions;
     }
 
-    log('[Note Capture] Notion desktop app detected on Windows');
+    logger.log('[Note Capture] Notion desktop app detected on Windows');
 
     // Get all Notion windows with their titles
     try {
@@ -63,7 +59,7 @@ async function captureNotionWindows(): Promise<NoteSession[]> {
         const processes = JSON.parse(windowInfo);
         const processList = Array.isArray(processes) ? processes : [processes];
 
-        log(`[Note Capture] Found ${processList.length} Notion window(s) with titles`);
+        logger.log(`[Note Capture] Found ${processList.length} Notion window(s) with titles`);
 
         for (const proc of processList) {
           let windowTitle = proc.MainWindowTitle || '';
@@ -99,13 +95,13 @@ async function captureNotionWindows(): Promise<NoteSession[]> {
             url: undefined, // Desktop app doesn't expose URLs easily, but we save the page name
           });
 
-          log(`[Note Capture] Captured Notion page: "${pageName}"${workspaceName ? ` in workspace "${workspaceName}"` : ''}`);
+          logger.log(`[Note Capture] Captured Notion page: "${pageName}"${workspaceName ? ` in workspace "${workspaceName}"` : ''}`);
         }
       }
 
       // If no windows with titles found, add a generic entry
       if (sessions.length === 0) {
-        log('[Note Capture] Notion is running but no titled windows found');
+        logger.log('[Note Capture] Notion is running but no titled windows found');
         sessions.push({
           appName: 'Notion',
           title: 'Notion (Running)',
@@ -139,11 +135,11 @@ async function captureNotepadWindows(): Promise<NoteSession[]> {
     const { stdout } = await execPromise('tasklist /FI "IMAGENAME eq notepad.exe" /FO CSV /NH');
     
     if (!stdout || !stdout.includes('notepad.exe')) {
-      log('[Note Capture] Notepad not running on Windows');
+      logger.log('[Note Capture] Notepad not running on Windows');
       return sessions;
     }
 
-    log('[Note Capture] Notepad detected on Windows');
+    logger.log('[Note Capture] Notepad detected on Windows');
 
     // Get all Notepad windows with their titles (which contain the file path)
     try {
@@ -211,11 +207,11 @@ async function captureNotionMacOS(): Promise<NoteSession[]> {
     const { stdout } = await execPromise('ps aux | grep -i "[N]otion" | grep -v grep || true');
     
     if (!stdout || !stdout.trim()) {
-      log('[Note Capture] Notion not running on macOS');
+      logger.log('[Note Capture] Notion not running on macOS');
       return sessions;
     }
 
-    log('[Note Capture] Notion detected on macOS');
+    logger.log('[Note Capture] Notion detected on macOS');
 
     // Try to get active window title using AppleScript
     try {
@@ -256,11 +252,11 @@ async function captureAppleNotes(): Promise<NoteSession[]> {
     const { stdout } = await execPromise('ps aux | grep -i "[N]otes.app" | grep -v grep || true');
     
     if (!stdout || !stdout.trim()) {
-      log('[Note Capture] Apple Notes not running on macOS');
+      logger.log('[Note Capture] Apple Notes not running on macOS');
       return sessions;
     }
 
-    log('[Note Capture] Apple Notes detected on macOS');
+    logger.log('[Note Capture] Apple Notes detected on macOS');
 
     // Try to get active note using AppleScript
     try {

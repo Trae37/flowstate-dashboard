@@ -1,11 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
-import { app } from 'electron';
 import { prepare } from './database.js';
 import { validateEmail, validatePassword, validateUsername, sanitizeString } from './utils/security.js';
-
-// Production-silent logging - only log in development
-const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
-const logError = (...args: any[]) => console.error(...args);
+import { logger } from './utils/logger.js';
 
 export interface User {
   id: number;
@@ -67,13 +63,13 @@ export async function createUser(email: string, password: string, username?: str
 
     // Check if user already exists
     const existingUser = prepare('SELECT id FROM users WHERE email = ?').get(sanitizedEmail);
-    log(`[Auth] Checking for existing user with email: ${email}`);
-    log(`[Auth] Existing user result:`, existingUser);
+    logger.log(`[Auth] Checking for existing user with email: ${email}`);
+    logger.log(`[Auth] Existing user result:`, existingUser);
     if (existingUser) {
-      log(`[Auth] User already exists with ID: ${existingUser.id}`);
+      logger.log(`[Auth] User already exists with ID: ${existingUser.id}`);
       return { success: false, error: 'An account with this email already exists' };
     }
-    log(`[Auth] No existing user found, proceeding with account creation`);
+    logger.log(`[Auth] No existing user found, proceeding with account creation`);
 
     // Check username if provided
     if (username) {
@@ -102,7 +98,7 @@ export async function createUser(email: string, password: string, username?: str
       feature_tour_completed: userRow.feature_tour_completed === 1 || userRow.feature_tour_completed === true,
     };
 
-    log(`[Auth] Created user account: ${email} (ID: ${userId})`);
+    logger.log(`[Auth] Created user account: ${email} (ID: ${userId})`);
 
     return { success: true, user };
   } catch (error) {
@@ -161,9 +157,9 @@ export async function loginUser(email: string, password: string): Promise<{ succ
       // This allows users to continue their work across login sessions
       if (existingSessions.length === 0) {
         createWorkSession(userRow.id);
-        log(`[Auth] Created new work session for user ${userRow.id} on login`);
+        logger.log(`[Auth] Created new work session for user ${userRow.id} on login`);
       } else {
-        log(`[Auth] User ${userRow.id} already has ${existingSessions.length} active session(s), not creating new one`);
+        logger.log(`[Auth] User ${userRow.id} already has ${existingSessions.length} active session(s), not creating new one`);
       }
     } catch (sessionError) {
       // Don't fail login if session management fails
@@ -183,7 +179,7 @@ export async function loginUser(email: string, password: string): Promise<{ succ
       feature_tour_completed: userRow.feature_tour_completed === 1 || userRow.feature_tour_completed === true,
     };
 
-    log(`[Auth] User logged in: ${email} (ID: ${user.id})`);
+    logger.log(`[Auth] User logged in: ${email} (ID: ${user.id})`);
 
     return { success: true, session, user };
   } catch (error) {
@@ -250,7 +246,7 @@ export async function logoutUser(sessionToken: string): Promise<{ success: boole
         // Only archive if the session has captures (to avoid archiving empty sessions)
         if (currentSession.capture_count && currentSession.capture_count > 0) {
           archiveWorkSession(currentSession.id!);
-          log(`[Auth] Archived work session ${currentSession.id} on logout`);
+          logger.log(`[Auth] Archived work session ${currentSession.id} on logout`);
         }
       } catch (sessionError) {
         // Don't fail logout if session archiving fails
@@ -260,7 +256,7 @@ export async function logoutUser(sessionToken: string): Promise<{ success: boole
     
     // Delete the auth session
     prepare('DELETE FROM sessions WHERE session_token = ?').run(sessionToken);
-    log('[Auth] User logged out');
+    logger.log('[Auth] User logged out');
     return { success: true };
   } catch (error) {
     console.error('[Auth] Error logging out:', error);
@@ -274,7 +270,7 @@ export async function logoutUser(sessionToken: string): Promise<{ success: boole
 export async function completeOnboarding(userId: number): Promise<{ success: boolean; error?: string }> {
   try {
     prepare('UPDATE users SET onboarding_completed = 1 WHERE id = ?').run(userId);
-    log(`[Auth] Onboarding completed for user ${userId}`);
+    logger.log(`[Auth] Onboarding completed for user ${userId}`);
     return { success: true };
   } catch (error) {
     console.error('[Auth] Error completing onboarding:', error);
@@ -288,7 +284,7 @@ export async function completeOnboarding(userId: number): Promise<{ success: boo
 export async function completeFeatureTour(userId: number): Promise<{ success: boolean; error?: string }> {
   try {
     prepare('UPDATE users SET feature_tour_completed = 1 WHERE id = ?').run(userId);
-    log(`[Auth] Feature tour completed for user ${userId}`);
+    logger.log(`[Auth] Feature tour completed for user ${userId}`);
     return { success: true };
   } catch (error) {
     console.error('[Auth] Error completing feature tour:', error);
@@ -302,7 +298,7 @@ export async function completeFeatureTour(userId: number): Promise<{ success: bo
 export async function cleanupExpiredSessions(): Promise<void> {
   try {
     prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
-    log(`[Auth] Cleaned up expired sessions`);
+    logger.log(`[Auth] Cleaned up expired sessions`);
   } catch (error) {
     console.error('[Auth] Error cleaning up sessions:', error);
   }
@@ -324,7 +320,7 @@ export async function deleteUser(email: string): Promise<{ success: boolean; err
     // Delete user (cascade will delete sessions, captures, assets, settings)
     prepare('DELETE FROM users WHERE id = ?').run(user.id);
     
-    log(`[Auth] Deleted user account: ${email} (ID: ${user.id})`);
+    logger.log(`[Auth] Deleted user account: ${email} (ID: ${user.id})`);
     return { success: true };
   } catch (error) {
     console.error('[Auth] Error deleting user:', error);

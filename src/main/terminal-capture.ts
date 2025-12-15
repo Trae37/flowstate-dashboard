@@ -3,13 +3,9 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { app } from 'electron';
+import { logger } from './utils/logger.js';
 
 const execPromise = promisify(exec);
-
-// Production-silent logging - only log in development
-const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
-const logError = (...args: any[]) => console.error(...args); // Always log errors
 
 export interface RunningCommand {
   processId: number;
@@ -218,7 +214,7 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
             // For Claude Code (node.js process running Claude CLI)
             const claudeMatch = child.CommandLine.match(/node(?:\.exe)?\s+.*?claude[^\\]*?(?:from|in)\s+["']?([^"'\s]+)["']?/i);
             if (claudeMatch && fs.existsSync(claudeMatch[1])) {
-              log(`Found Claude Code working directory from command line: ${claudeMatch[1]}`);
+              logger.log(`Found Claude Code working directory from command line: ${claudeMatch[1]}`);
               return claudeMatch[1];
             }
 
@@ -229,7 +225,7 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
               // Skip node_modules paths
               if (scriptPath && !scriptPath.includes('node_modules') && fs.existsSync(scriptPath)) {
                 const dir = path.dirname(scriptPath);
-                log(`Found working directory from Node.js script: ${dir}`);
+                logger.log(`Found working directory from Node.js script: ${dir}`);
                 return dir;
               }
             }
@@ -240,7 +236,7 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
               const scriptPath = pythonMatch[1] || pythonMatch[2];
               if (scriptPath && fs.existsSync(scriptPath)) {
                 const dir = path.dirname(scriptPath);
-                log(`Found working directory from Python script: ${dir}`);
+                logger.log(`Found working directory from Python script: ${dir}`);
                 return dir;
               }
             }
@@ -248,7 +244,7 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
             // Check for --cwd or similar flags in command line
             const cwdMatch = child.CommandLine.match(/(?:--cwd|--working-directory)\s+["']?([^"'\s]+)["']?/i);
             if (cwdMatch && fs.existsSync(cwdMatch[1])) {
-              log(`Found working directory from --cwd flag: ${cwdMatch[1]}`);
+              logger.log(`Found working directory from --cwd flag: ${cwdMatch[1]}`);
               return cwdMatch[1];
             }
           }
@@ -266,12 +262,12 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
 
     const dir = extractWorkingDirectory(stdout);
     if (dir && fs.existsSync(dir)) {
-      log(`Found working directory from PowerShell command line: ${dir}`);
+      logger.log(`Found working directory from PowerShell command line: ${dir}`);
       return dir;
     }
 
     // Method 3: Default to user home directory
-    log(`Using fallback directory: ${os.homedir()}`);
+    logger.log(`Using fallback directory: ${os.homedir()}`);
     return os.homedir();
   } catch (error) {
     console.warn(`Could not get working directory for process ${processId}:`, error);
@@ -403,7 +399,7 @@ export async function captureTerminalSessions(): Promise<TerminalCaptureResult> 
 
   // Helper to log to both console and renderer
   const logDebug = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -760,7 +756,7 @@ async function captureWindowsTerminalSessions(): Promise<TerminalSession[]> {
 
         const claudeWorkspace = resolveClaudeWorkingDirectory(runningCommands, currentDirectory);
         if (claudeWorkspace && claudeWorkspace !== currentDirectory) {
-          log(
+          logger.log(
             `[Terminal Capture] Windows Terminal PID ${proc.Id}: using Claude workspace ${claudeWorkspace}`
           );
           currentDirectory = claudeWorkspace;
@@ -835,7 +831,7 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
 
   // Helper to log to both console and renderer
   const logDebug = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -899,7 +895,7 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
           powerShellVersion = (procName.toLowerCase() === 'pwsh.exe' || procName.toLowerCase() === 'pwsh') ? 'Core' : 'Classic';
         }
 
-        log(`[DEBUG Capture] PowerShell PID ${pid}: ExecutablePath = "${exePath}" -> version ${powerShellVersion}`);
+        logger.log(`[DEBUG Capture] PowerShell PID ${pid}: ExecutablePath = "${exePath}" -> version ${powerShellVersion}`);
         
         // Check if this PowerShell is running inside Windows Terminal
         let isWindowsTerminal = false;
@@ -908,7 +904,7 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
           { timeout: 3000 }
         ).catch(() => ({ stdout: '' }));
 
-        log(`[DEBUG Capture] PowerShell PID ${pid}: parentCheck = "${parentCheck?.trim() || ''}"`);
+        logger.log(`[DEBUG Capture] PowerShell PID ${pid}: parentCheck = "${parentCheck?.trim() || ''}"`);
 
         // Declare parent info variables outside the if block so they're available later
         let parentName: string | undefined;
@@ -934,9 +930,9 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
           const parentNameStr = (parentName?.trim() || '').toLowerCase();
           const parentCmdLineStr = (parentCommandLine?.trim() || '').toLowerCase();
 
-          log(`[DEBUG Capture] PowerShell PID ${pid}: parentId = ${parentId}`);
-          log(`[DEBUG Capture] PowerShell PID ${pid}: parentName = "${parentName?.trim() || ''}"`);
-          log(`[DEBUG Capture] PowerShell PID ${pid}: parentCommandLine = "${parentCommandLine?.trim() || ''}"`);
+          logger.log(`[DEBUG Capture] PowerShell PID ${pid}: parentId = ${parentId}`);
+          logger.log(`[DEBUG Capture] PowerShell PID ${pid}: parentName = "${parentName?.trim() || ''}"`);
+          logger.log(`[DEBUG Capture] PowerShell PID ${pid}: parentCommandLine = "${parentCommandLine?.trim() || ''}"`);
 
           // Check if parent is Windows Terminal (either by name or command line)
           // Windows Terminal can appear as: WindowsTerminal.exe, wt.exe, or WindowsTerminal
@@ -948,14 +944,14 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
           
           if (isWT) {
             isWindowsTerminal = true; // This PowerShell is running in Windows Terminal
-            log(`[DEBUG Capture] PowerShell PID ${pid}: ✓ DETECTED as Windows Terminal session`);
+            logger.log(`[DEBUG Capture] PowerShell PID ${pid}: ✓ DETECTED as Windows Terminal session`);
           } else {
-            log(`[DEBUG Capture] PowerShell PID ${pid}: ✗ NOT in Windows Terminal`);
-            log(`[DEBUG Capture] PowerShell PID ${pid}:   parentName check: ${parentNameStr.includes('windowsterminal') || parentNameStr === 'wt'}`);
-            log(`[DEBUG Capture] PowerShell PID ${pid}:   parentCmdLine check: ${parentCmdLineStr.includes('windowsterminal.exe') || parentCmdLineStr.includes(' wt.exe')}`);
+            logger.log(`[DEBUG Capture] PowerShell PID ${pid}: ✗ NOT in Windows Terminal`);
+            logger.log(`[DEBUG Capture] PowerShell PID ${pid}:   parentName check: ${parentNameStr.includes('windowsterminal') || parentNameStr === 'wt'}`);
+            logger.log(`[DEBUG Capture] PowerShell PID ${pid}:   parentCmdLine check: ${parentCmdLineStr.includes('windowsterminal.exe') || parentCmdLineStr.includes(' wt.exe')}`);
           }
         } else {
-          log(`[DEBUG Capture] PowerShell PID ${pid}: No parent check result, assuming classic console`);
+          logger.log(`[DEBUG Capture] PowerShell PID ${pid}: No parent check result, assuming classic console`);
         }
 
         // Get the PowerShell process's own command line
@@ -966,9 +962,9 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
             `powershell -Command "(Get-WmiObject Win32_Process -Filter \\"ProcessId = ${pid}\\").CommandLine"`
           ).catch(() => ({ stdout: '' }));
           ownCommandLine = ownCmdResult.stdout?.trim();
-          log(`[DEBUG Capture] PowerShell PID ${pid}: ownCommandLine = "${ownCommandLine || ''}"`);
+          logger.log(`[DEBUG Capture] PowerShell PID ${pid}: ownCommandLine = "${ownCommandLine || ''}"`);
         } catch (err: any) {
-          log(`[DEBUG Capture] PowerShell PID ${pid}: Failed to get own command line:`, err?.message);
+          logger.log(`[DEBUG Capture] PowerShell PID ${pid}: Failed to get own command line:`, err?.message);
         }
 
         // For Windows Terminal sessions, get window title from parent process
@@ -982,12 +978,12 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
             const parentTitle = parentTitleResult.stdout?.trim();
             if (parentTitle) {
               windowTitle = parentTitle;
-              log(`[DEBUG Capture] PowerShell PID ${pid}: Fetched window title from parent WT process: "${windowTitle}"`);
+              logger.log(`[DEBUG Capture] PowerShell PID ${pid}: Fetched window title from parent WT process: "${windowTitle}"`);
             } else {
-              log(`[DEBUG Capture] PowerShell PID ${pid}: Parent WT has no window title`);
+              logger.log(`[DEBUG Capture] PowerShell PID ${pid}: Parent WT has no window title`);
             }
           } catch (err: any) {
-            log(`[DEBUG Capture] PowerShell PID ${pid}: Failed to get parent WT window title:`, err?.message);
+            logger.log(`[DEBUG Capture] PowerShell PID ${pid}: Failed to get parent WT window title:`, err?.message);
           }
         }
 
@@ -999,7 +995,7 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
 
         const claudeWorkspace = resolveClaudeWorkingDirectory(runningCommands, currentDirectory);
         if (claudeWorkspace && claudeWorkspace !== currentDirectory) {
-          log(
+          logger.log(
             `[Terminal Capture] PowerShell PID ${pid}: using Claude workspace ${claudeWorkspace}`
           );
           currentDirectory = claudeWorkspace;
@@ -1014,10 +1010,10 @@ async function capturePowerShellSessions(): Promise<TerminalSession[]> {
         // Get the last executed command
         const lastExecutedCommand = getLastExecutedCommand(historyResult);
 
-        log(`[DEBUG Capture] PowerShell PID ${pid} final metadata:`);
-        log(`[DEBUG Capture]   processName: ${procName}`);
-        log(`[DEBUG Capture]   powerShellVersion: ${powerShellVersion}`);
-        log(`[DEBUG Capture]   isWindowsTerminal: ${isWindowsTerminal} (will be saved to database)`);
+        logger.log(`[DEBUG Capture] PowerShell PID ${pid} final metadata:`);
+        logger.log(`[DEBUG Capture]   processName: ${procName}`);
+        logger.log(`[DEBUG Capture]   powerShellVersion: ${powerShellVersion}`);
+        logger.log(`[DEBUG Capture]   isWindowsTerminal: ${isWindowsTerminal} (will be saved to database)`);
 
         sessions.push({
           processId: pid,
@@ -1672,7 +1668,7 @@ async function captureTerminalOutput(session: TerminalSession): Promise<string |
             fs.readSync(fd, buffer, 0, 10240, start);
             fs.closeSync(fd);
             output = buffer.toString('utf-8');
-            log(`Captured ${output.length} bytes from PowerShell transcript`);
+            logger.log(`Captured ${output.length} bytes from PowerShell transcript`);
           }
         }
       } catch (err) {
@@ -1689,7 +1685,7 @@ async function captureTerminalOutput(session: TerminalSession): Promise<string |
         const result = execSync(cmd, { timeout: 2000, encoding: 'utf-8' }).trim();
         if (result) {
           output = result;
-          log(`Captured command history via PowerShell`);
+          logger.log(`Captured command history via PowerShell`);
         }
       } catch (err) {
         // Not available
@@ -1727,7 +1723,7 @@ async function captureTerminalOutput(session: TerminalSession): Promise<string |
             fs.readSync(fd, buffer, 0, buffer.length, start);
             fs.closeSync(fd);
             output = buffer.toString('utf-8');
-            log(`Captured ${output.length} bytes from Claude log file: ${logPath}`);
+            logger.log(`Captured ${output.length} bytes from Claude log file: ${logPath}`);
             break;
           }
         } catch (err) {
@@ -1862,12 +1858,12 @@ async function captureClaudeCodeContext(
       return undefined;
     }
 
-    log(`Detected Claude Code session in: ${cwd}`);
+    logger.log(`Detected Claude Code session in: ${cwd}`);
 
     // SMART DIRECTORY DETECTION: If we're in the home directory, try to find the actual project directory
     // Claude Code is likely running in a project directory, not the home directory
     if (cwd === os.homedir() || cwd.toLowerCase() === os.homedir().toLowerCase()) {
-      log(`[Claude Context] Currently in home directory, searching for actual project directory...`);
+      logger.log(`[Claude Context] Currently in home directory, searching for actual project directory...`);
 
       // Method 1: Look for git repositories with recent commits/changes
       const commonProjectDirs = [
@@ -1907,7 +1903,7 @@ async function captureClaudeCodeContext(
 
               if (statusOutput && statusOutput.trim()) {
                 // Has uncommitted changes - this is likely the active project!
-                log(`[Claude Context] Found git repository with uncommitted changes: ${gitRepo}`);
+                logger.log(`[Claude Context] Found git repository with uncommitted changes: ${gitRepo}`);
                 cwd = gitRepo;
                 break;
               }
@@ -1923,7 +1919,7 @@ async function captureClaudeCodeContext(
                 const oneHourAgo = Date.now() - (60 * 60 * 1000);
 
                 if (commitTime > oneHourAgo) {
-                  log(`[Claude Context] Found git repository with recent commit: ${gitRepo}`);
+                  logger.log(`[Claude Context] Found git repository with recent commit: ${gitRepo}`);
                   cwd = gitRepo;
                   break;
                 }
@@ -1956,7 +1952,7 @@ async function captureClaudeCodeContext(
             }
 
             if (fs.existsSync(targetDir)) {
-              log(`[Claude Context] Found directory from command history: ${targetDir}`);
+              logger.log(`[Claude Context] Found directory from command history: ${targetDir}`);
               cwd = targetDir;
             }
           }
@@ -1964,9 +1960,9 @@ async function captureClaudeCodeContext(
       }
 
       if (cwd !== os.homedir()) {
-        log(`[Claude Context] Detected actual working directory: ${cwd}`);
+        logger.log(`[Claude Context] Detected actual working directory: ${cwd}`);
       } else {
-        log(`[Claude Context] Could not detect project directory, using home directory`);
+        logger.log(`[Claude Context] Could not detect project directory, using home directory`);
       }
     }
 
@@ -2029,15 +2025,15 @@ async function captureClaudeCodeContext(
       []
     );
 
-    log(`Claude Code context captured: ${recentFiles.length} recent files, ${projectFiles.length} project files`);
-    log(`Claude Code startup command: ${startupCommand}`);
+    logger.log(`Claude Code context captured: ${recentFiles.length} recent files, ${projectFiles.length} project files`);
+    logger.log(`Claude Code startup command: ${startupCommand}`);
 
     // Parse conversation from terminal output if available
     let contextHint = '';
     if (session.terminalOutput && session.terminalOutput.length > 0) {
       contextHint = parseClaudeConversation(session.terminalOutput);
       if (contextHint) {
-        log(`Parsed Claude Code conversation: ${contextHint.length} chars`);
+        logger.log(`Parsed Claude Code conversation: ${contextHint.length} chars`);
       }
     }
 
@@ -2268,7 +2264,7 @@ function generateClaudeContextFile(claude: ClaudeCodeContext): string {
         try {
           if (fs.existsSync(targetDir)) {
             actualWorkingDir = targetDir;
-            log(`[Context] Using directory from cd command: ${actualWorkingDir}`);
+            logger.log(`[Context] Using directory from cd command: ${actualWorkingDir}`);
           }
         } catch (e) {
           // Keep using reported working directory
@@ -2851,15 +2847,15 @@ function createStartupScript(session: TerminalSession): string | null {
   const commands: string[] = [];
 
   // DEBUG: Log what we received
-  log('[DEBUG createStartupScript] Creating startup script for session:');
-  log('[DEBUG createStartupScript]   processId:', session.processId);
-  log('[DEBUG createStartupScript]   shellType:', session.shellType);
-  log('[DEBUG createStartupScript]   currentDirectory:', session.currentDirectory);
-  log('[DEBUG createStartupScript]   has claudeCodeContext:', !!session.claudeCodeContext);
+  logger.log('[DEBUG createStartupScript] Creating startup script for session:');
+  logger.log('[DEBUG createStartupScript]   processId:', session.processId);
+  logger.log('[DEBUG createStartupScript]   shellType:', session.shellType);
+  logger.log('[DEBUG createStartupScript]   currentDirectory:', session.currentDirectory);
+  logger.log('[DEBUG createStartupScript]   has claudeCodeContext:', !!session.claudeCodeContext);
   if (session.claudeCodeContext) {
-    log('[DEBUG createStartupScript]   claudeCodeContext.isClaudeCodeRunning:', session.claudeCodeContext.isClaudeCodeRunning);
-    log('[DEBUG createStartupScript]   claudeCodeContext.workingDirectory:', session.claudeCodeContext.workingDirectory);
-    log('[DEBUG createStartupScript]   claudeCodeContext.projectFiles count:', session.claudeCodeContext.projectFiles?.length || 0);
+    logger.log('[DEBUG createStartupScript]   claudeCodeContext.isClaudeCodeRunning:', session.claudeCodeContext.isClaudeCodeRunning);
+    logger.log('[DEBUG createStartupScript]   claudeCodeContext.workingDirectory:', session.claudeCodeContext.workingDirectory);
+    logger.log('[DEBUG createStartupScript]   claudeCodeContext.projectFiles count:', session.claudeCodeContext.projectFiles?.length || 0);
   }
 
   // Change to working directory if available
@@ -3299,7 +3295,7 @@ async function restoreWindowsTerminal(session: TerminalSession, startupScript: s
 
   // Log to both console and renderer
   const log = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -3307,7 +3303,7 @@ async function restoreWindowsTerminal(session: TerminalSession, startupScript: s
   };
   
   const logDebug = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -3376,17 +3372,17 @@ async function restoreWindowsTerminal(session: TerminalSession, startupScript: s
     return 'wt.exe';
   };
   
-  log('=== Restoring Terminal ===');
-  log('Shell type:', session.shellType);
-  log('Target directory:', cwd);
-  log('Has startup script:', !!startupScript);
-  log('PowerShell version:', session.powerShellVersion || 'Unknown');
-  log('isWindowsTerminal value:', session.isWindowsTerminal);
-  log('isWindowsTerminal type:', typeof session.isWindowsTerminal);
-  log('isWindowsTerminal === true:', session.isWindowsTerminal === true);
-  log('isWindowsTerminal === undefined:', session.isWindowsTerminal === undefined);
-  log('powerShellVersion value:', session.powerShellVersion);
-  log('powerShellVersion === "Core":', session.powerShellVersion === 'Core');
+  logger.log('=== Restoring Terminal ===');
+  logger.log('Shell type:', session.shellType);
+  logger.log('Target directory:', cwd);
+  logger.log('Has startup script:', !!startupScript);
+  logger.log('PowerShell version:', session.powerShellVersion || 'Unknown');
+  logger.log('isWindowsTerminal value:', session.isWindowsTerminal);
+  logger.log('isWindowsTerminal type:', typeof session.isWindowsTerminal);
+  logger.log('isWindowsTerminal === true:', session.isWindowsTerminal === true);
+  logger.log('isWindowsTerminal === undefined:', session.isWindowsTerminal === undefined);
+  logger.log('powerShellVersion value:', session.powerShellVersion);
+  logger.log('powerShellVersion === "Core":', session.powerShellVersion === 'Core');
 
   // If we have a startup script, create a temporary file and execute it
   if (startupScript) {
@@ -3463,8 +3459,8 @@ ${startupScript || ''}`;
           throw new Error(`Script file does not exist at ${scriptPath}`);
         }
 
-        log('Script file created at:', scriptPath);
-        log('Launching PowerShell...');
+        logger.log('Script file created at:', scriptPath);
+        logger.log('Launching PowerShell...');
 
         // Restore exactly as captured - no fallbacks
         // MUST have both isWindowsTerminal and powerShellVersion from capture
@@ -3654,7 +3650,7 @@ ${startupScript || ''}`;
           }
         } else {
           // Original was in classic console - restore to classic console (no fallbacks)
-          log('Restoring to classic PowerShell console (as captured)...');
+          logger.log('Restoring to classic PowerShell console (as captured)...');
           const escapedScriptPath = scriptPath.replace(/"/g, '""');
           const windowTitle = `FlowState Restore - ${usePowerShellCore ? 'PowerShell Core' : 'PowerShell'}`;
           
@@ -3692,8 +3688,8 @@ ${startupScript}`;
         scriptPath = path.join(tempDir, `flowstate_restore_${Date.now()}.bat`);
         fs.writeFileSync(scriptPath, cmdScript, 'utf-8');
 
-        log('Script file created at:', scriptPath);
-        log('Launching CMD...');
+        logger.log('Script file created at:', scriptPath);
+        logger.log('Launching CMD...');
 
         // Use spawn to launch CMD
         const cmdProcess = spawn('cmd.exe', ['/K', scriptPath], {
@@ -3703,7 +3699,7 @@ ${startupScript}`;
         });
 
         cmdProcess.unref();
-        log('CMD process launched');
+        logger.log('CMD process launched');
         break;
 
       case 'GitBash':
@@ -3812,7 +3808,7 @@ ${startupScript || ''}`, 'utf-8');
             env,
           });
           wtProcess.unref();
-          log('[Terminal Restore] Windows Terminal launched');
+          logger.log('[Terminal Restore] Windows Terminal launched');
         } catch (error) {
           console.error('[Terminal Restore] Failed to launch Windows Terminal:', error);
           throw new Error('Windows Terminal is required. Please install Windows Terminal.');
@@ -3909,7 +3905,7 @@ ${startupScript || ''}`, 'utf-8');
                 shell: false,
               });
               wtProcess.unref();
-              log('[Terminal Restore] Default PowerShell launched in Windows Terminal');
+              logger.log('[Terminal Restore] Default PowerShell launched in Windows Terminal');
             } catch (spawnError) {
               console.error('[Terminal Restore] Failed to launch PowerShell in Windows Terminal:', spawnError);
               throw new Error('Windows Terminal is required to restore PowerShell. Please install Windows Terminal.');
@@ -3918,7 +3914,7 @@ ${startupScript || ''}`, 'utf-8');
         });
     }
 
-    log(`Restored ${session.shellType} terminal with startup script at ${cwd}`);
+    logger.log(`Restored ${session.shellType} terminal with startup script at ${cwd}`);
   } else {
     // No startup script, just open terminal at the working directory
     switch (session.shellType) {
@@ -4147,7 +4143,7 @@ Set-Location -Path '${cwd.replace(/'/g, "''")}'
             stdio: 'ignore',
           });
           wtNoScriptProcess.unref();
-          log('[Terminal Restore] Windows Terminal launched');
+          logger.log('[Terminal Restore] Windows Terminal launched');
         } catch (error) {
           console.error('[Terminal Restore] Failed to launch Windows Terminal:', error);
           throw new Error('Windows Terminal is required. Please install Windows Terminal.');
@@ -4160,7 +4156,7 @@ Set-Location -Path '${cwd.replace(/'/g, "''")}'
         throw new Error(`Cannot restore terminal: Unknown shell type "${session.shellType}". Restore is only supported for captured terminals with known types.`);
     }
 
-    log(`Restored ${session.shellType} terminal session at ${cwd}`);
+    logger.log(`Restored ${session.shellType} terminal session at ${cwd}`);
   }
 }
 
@@ -4182,11 +4178,11 @@ async function restoreMacOSTerminal(session: TerminalSession, startupScript: str
     // Open Terminal with the startup script
     await execPromise(`open -a Terminal "${scriptPath}"`);
 
-    log(`Restored macOS terminal with startup script at ${cwd}`);
+    logger.log(`Restored macOS terminal with startup script at ${cwd}`);
   } else {
     // Open Terminal with working directory
     await execPromise(`open -a Terminal "${cwd}"`);
-    log(`Restored macOS terminal session at ${cwd}`);
+    logger.log(`Restored macOS terminal session at ${cwd}`);
   }
 }
 
@@ -4216,7 +4212,7 @@ async function restoreLinuxTerminal(session: TerminalSession, startupScript: str
       }
     }
 
-    log(`Restored Linux terminal with startup script at ${cwd}`);
+    logger.log(`Restored Linux terminal with startup script at ${cwd}`);
   } else {
     // Try common terminal emulators
     try {
@@ -4229,6 +4225,6 @@ async function restoreLinuxTerminal(session: TerminalSession, startupScript: str
       }
     }
 
-    log(`Restored Linux terminal session at ${cwd}`);
+    logger.log(`Restored Linux terminal session at ${cwd}`);
   }
 }

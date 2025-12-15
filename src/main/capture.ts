@@ -1,13 +1,9 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { app } from 'electron';
 import { prepare, type Capture, type Asset } from './database.js';
+import { logger } from './utils/logger.js';
 
 const execPromise = promisify(exec);
-
-// Production-silent logging - only log in development
-const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
-const logError = (...args: any[]) => console.error(...args);
 
 type CaptureSummary = {
   vsCode: number;
@@ -34,7 +30,7 @@ const captureSteps: Array<{
 ];
 
 const logCapture = (...args: any[]) => {
-  log(...args);
+  logger.log(...args);
   try {
     const logToRenderer = (global as any).logToRenderer;
     if (logToRenderer) logToRenderer(...args);
@@ -545,47 +541,9 @@ export async function captureWorkspace(
 async function captureNoteSessions(captureId: number): Promise<Asset[]> {
   const assets: Asset[] = [];
 
-  // TEMPORARY: Notes capture disabled due to hanging issue
-  // TODO: Fix note-integration.js hanging and re-enable
-  log('[Note Capture] Notes capture temporarily disabled');
+  // TODO: Notes capture disabled due to hanging issue in note-integration.js
+  logger.log('[Note Capture] Notes capture temporarily disabled');
   return assets;
-
-  // try {
-  //   // Import note integration module
-  //   const { captureNoteSessions: getNotes } = await import('./note-integration.js');
-
-  //   const sessions = await getNotes();
-  //   log(`[Note Capture] Captured ${sessions.length} note session(s)`);
-
-  //   for (const session of sessions) {
-  //     // Create a cleaner title for the asset card
-  //     let assetTitle = session.title || 'Untitled';
-  //     if (session.appName) {
-  //       assetTitle = `${session.appName}: ${assetTitle}`;
-  //     }
-
-  //     assets.push({
-  //       capture_id: captureId,
-  //       asset_type: 'notes',
-  //       title: assetTitle,
-  //       path: session.filePath || session.url,
-  //       content: session.content || `${session.appName} session`,
-  //       metadata: JSON.stringify({
-  //           appName: session.appName,
-  //           title: session.title,
-  //           url: session.url,
-  //           filePath: session.filePath,
-  //           processId: session.processId,
-  //         }),
-  //     });
-
-  //     log(`[Note Capture] Saved note asset: ${assetTitle}`);
-  //   }
-  // } catch (error) {
-  //   console.warn('[Note Capture] Could not capture note sessions:', error);
-  // }
-
-  // return assets;
 }
 
 async function captureVSCodeSessions(captureId: number): Promise<Asset[]> {
@@ -682,7 +640,7 @@ async function captureTerminalSessions(captureId: number): Promise<Asset[]> {
   
   // Helper to log to both console and renderer
   const logDebug = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -879,14 +837,14 @@ async function captureTerminalSessions(captureId: number): Promise<Asset[]> {
       } catch {}
     };
 
-    logError('[Capture] ============================================');
-    logError('[Capture] ✗ ERROR: Enhanced terminal capture failed!');
-    logError('[Capture] ============================================');
-    logError('[Capture] Error type:', error?.constructor?.name || typeof error);
-    logError('[Capture] Error message:', error?.message || String(error));
-    logError('[Capture] Error stack:', error?.stack);
-    logError('[Capture] This is why you see "Terminal Sessions (Basic)" assets');
-    logError('[Capture] ============================================');
+    logger.error('[Capture] ============================================');
+    logger.error('[Capture] ✗ ERROR: Enhanced terminal capture failed!');
+    logger.error('[Capture] ============================================');
+    logger.error('[Capture] Error type:', error?.constructor?.name || typeof error);
+    logger.error('[Capture] Error message:', error?.message || String(error));
+    logger.error('[Capture] Error stack:', error?.stack);
+    logger.error('[Capture] This is why you see "Terminal Sessions (Basic)" assets');
+    logger.error('[Capture] ============================================');
     console.warn('Could not capture terminal sessions:', error);
 
     // Fallback to basic terminal detection
@@ -932,7 +890,7 @@ async function captureBrowserTabs(captureId: number): Promise<Asset[]> {
 
   // Helper to log to both console and renderer (matches terminal capture pattern)
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);

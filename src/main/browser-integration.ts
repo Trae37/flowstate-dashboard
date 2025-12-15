@@ -1,13 +1,9 @@
 import CDP from 'chrome-remote-interface';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { app } from 'electron';
+import { logger } from './utils/logger.js';
 
 const execPromise = promisify(exec);
-
-// Production-silent logging - only log in development
-const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
-const logError = (...args: any[]) => console.error(...args);
 
 export interface BrowserTab {
   url: string;
@@ -177,7 +173,7 @@ async function getTabsFromPort(port: number, browserName: string): Promise<Brows
 
     // Helper to log to both console and renderer
     const logCapture = (...args: any[]) => {
-      log(...args);
+      logger.log(...args);
       try {
         const logToRenderer = (global as any).logToRenderer;
         if (logToRenderer) logToRenderer(...args);
@@ -439,7 +435,7 @@ export async function captureBrowserSessions(): Promise<BrowserSession[]> {
 
   // Helper to log to both console and renderer
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -597,7 +593,7 @@ Once launched with debugging, the app can detect it immediately - no restart nee
  */
 async function closeBrowserWindows(browserName: string): Promise<{ success: boolean; error?: string }> {
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -671,7 +667,7 @@ async function closeBrowserWindows(browserName: string): Promise<{ success: bool
  */
 async function captureTabsBeforeClose(browserName: string): Promise<BrowserTab[]> {
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -715,7 +711,7 @@ async function captureTabsBeforeClose(browserName: string): Promise<BrowserTab[]
  */
 async function restoreTabsAfterRelaunch(browserName: string, tabs: BrowserTab[], port: number): Promise<void> {
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -808,7 +804,7 @@ async function restoreTabsAfterRelaunch(browserName: string, tabs: BrowserTab[],
  */
 export async function closeAndRelaunchBrowserWithDebugging(browserName: string): Promise<{ success: boolean; error?: string }> {
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -865,7 +861,7 @@ export async function closeAndRelaunchBrowserWithDebugging(browserName: string):
  */
 export async function launchBrowserWithDebugging(browserName: string): Promise<{ success: boolean; error?: string }> {
   const logCapture = (...args: any[]) => {
-    log(...args);
+    logger.log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);

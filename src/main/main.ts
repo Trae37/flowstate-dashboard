@@ -1060,17 +1060,8 @@ app.whenReady().then(async () => {
 
     // Set up background task to check for new day sessions and auto-capture
     setupNewDayAutoCapture();
-    
-    // DISABLED: Browser interceptor was too aggressive - it forcefully closed browsers without user consent
-    // TODO: Make this opt-in with a setting and show a dialog asking for permission before closing browsers
-    // Start monitoring for browser launches to auto-intercept them
-    // try {
-    //   const { startBrowserLaunchMonitoring } = await import('./browser-launch-interceptor.js');
-    //   startBrowserLaunchMonitoring();
-    //   safeLog('[Main] Browser launch monitoring started');
-    // } catch (error) {
-    //   safeError('[Main] Failed to start browser launch monitoring:', error);
-    // }
+
+    // TODO: Browser launch interceptor disabled - needs opt-in setting with user consent dialog
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

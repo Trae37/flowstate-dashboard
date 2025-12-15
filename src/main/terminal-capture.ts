@@ -197,6 +197,46 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
   try {
     if (process.platform !== 'win32') return undefined;
 
+    // Method 0: Try to get directory from window title (most reliable for terminals)
+    try {
+      const { stdout: titleOutput } = await execPromise(
+        `powershell -Command "(Get-Process -Id ${processId} -ErrorAction SilentlyContinue).MainWindowTitle"`,
+        { timeout: 3000 }
+      ).catch(() => ({ stdout: '' }));
+
+      if (titleOutput && titleOutput.trim()) {
+        const title = titleOutput.trim();
+        // Many terminals show path in title like "C:\Users\..." or "~/projects" or "MINGW64:/c/..."
+        // Check for Windows path patterns
+        const winPathMatch = title.match(/([A-Z]:\\[^<>:"|?*\r\n]+)/i);
+        if (winPathMatch && fs.existsSync(winPathMatch[1])) {
+          logger.log(`Found working directory from window title: ${winPathMatch[1]}`);
+          return winPathMatch[1];
+        }
+        // Check for patterns like "Administrator: Windows PowerShell" followed by path
+        const adminPathMatch = title.match(/:\s*([A-Z]:\\[^<>:"|?*\r\n]+)/i);
+        if (adminPathMatch && fs.existsSync(adminPathMatch[1])) {
+          logger.log(`Found working directory from admin window title: ${adminPathMatch[1]}`);
+          return adminPathMatch[1];
+        }
+      }
+    } catch {
+      // Window title method failed, continue to other methods
+    }
+
+    // Method 0.5: Try to query the process's current directory using handle information
+    try {
+      const { stdout: handleOutput } = await execPromise(
+        `powershell -Command "$p = Get-Process -Id ${processId} -ErrorAction SilentlyContinue; if ($p) { $p.Path | Split-Path -Parent }"`,
+        { timeout: 3000 }
+      ).catch(() => ({ stdout: '' }));
+
+      // This gets the executable directory, not CWD, but it's a hint
+      // Don't use this directly - it's the install path, not working dir
+    } catch {
+      // Handle query failed
+    }
+
     // Method 1: Check if any child processes have a working directory we can use
     const { stdout: childProcs } = await execPromise(
       `powershell -Command "$children = Get-WmiObject Win32_Process | Where-Object {$_.ParentProcessId -eq ${processId}}; $children | Select-Object Name, CommandLine, ExecutablePath | ConvertTo-Json"`,
@@ -266,7 +306,64 @@ async function getCurrentWorkingDirectory(processId: number): Promise<string | u
       return dir;
     }
 
-    // Method 3: Default to user home directory
+    // Method 3: Check for Claude Code process and get its working directory
+    try {
+      const { stdout: claudeCheck } = await execPromise(
+        `powershell -Command "Get-WmiObject Win32_Process | Where-Object { $_.ParentProcessId -eq ${processId} -and $_.Name -match 'node|claude' } | Select-Object ProcessId, CommandLine | ConvertTo-Json"`,
+        { timeout: 5000 }
+      ).catch(() => ({ stdout: '' }));
+
+      if (claudeCheck && claudeCheck.trim()) {
+        const claudeProcs = JSON.parse(claudeCheck);
+        const procList = Array.isArray(claudeProcs) ? claudeProcs : [claudeProcs];
+
+        for (const proc of procList) {
+          if (proc.CommandLine) {
+            // Look for project directories in Claude Code command line
+            // Claude Code often runs from the project directory
+            const projectMatch = proc.CommandLine.match(/--project[=\s]+["']?([^"'\s]+)["']?/i);
+            if (projectMatch && fs.existsSync(projectMatch[1])) {
+              logger.log(`Found working directory from Claude Code --project flag: ${projectMatch[1]}`);
+              return projectMatch[1];
+            }
+
+            // Check for common project indicators in the path
+            const pathMatches = proc.CommandLine.match(/([A-Z]:\\[^"'\s]+(?:flowstate|project|workspace|src|app)[^"'\s]*)/gi);
+            if (pathMatches) {
+              for (const pathMatch of pathMatches) {
+                const cleanPath = pathMatch.replace(/\\node_modules.*/i, '').replace(/\\\..*$/, '');
+                if (fs.existsSync(cleanPath) && fs.statSync(cleanPath).isDirectory()) {
+                  logger.log(`Found working directory from Claude process path: ${cleanPath}`);
+                  return cleanPath;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Claude detection failed
+    }
+
+    // Method 4: Try to get from PSReadLine history (last cd command)
+    try {
+      const historyPath = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'PowerShell', 'PSReadLine', 'ConsoleHost_history.txt');
+      if (fs.existsSync(historyPath)) {
+        const history = fs.readFileSync(historyPath, 'utf-8');
+        const lines = history.split('\n').reverse();
+        for (const line of lines.slice(0, 50)) { // Check last 50 commands
+          const cdMatch = line.match(/^(?:cd|Set-Location|Push-Location)\s+["']?([A-Z]:\\[^"'\r\n]+)["']?/i);
+          if (cdMatch && fs.existsSync(cdMatch[1])) {
+            logger.log(`Found working directory from PSReadLine history: ${cdMatch[1]}`);
+            return cdMatch[1];
+          }
+        }
+      }
+    } catch {
+      // History file read failed
+    }
+
+    // Method 5: Default to user home directory
     logger.log(`Using fallback directory: ${os.homedir()}`);
     return os.homedir();
   } catch (error) {

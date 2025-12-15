@@ -29,6 +29,13 @@ class Logger {
   }
 
   /**
+   * Log a message (alias for info, for easy console.log migration)
+   */
+  log(...args: any[]): void {
+    this.info(...args);
+  }
+
+  /**
    * Log a debug message
    */
   debug(...args: any[]): void {
@@ -99,10 +106,16 @@ class Logger {
 export const logger = new Logger();
 
 // Set default level based on environment
-if (process.env.NODE_ENV === 'development') {
-  logger.setLevel(LogLevel.DEBUG);
+// In production (packaged app), only show warnings and errors
+// In development, show all logs including debug
+const isProduction = process.env.NODE_ENV === 'production' ||
+  (typeof process !== 'undefined' && process.versions && process.versions.electron &&
+   !process.defaultApp && !process.argv.includes('--dev'));
+
+if (isProduction) {
+  logger.setLevel(LogLevel.WARN);
 } else {
-  logger.setLevel(LogLevel.INFO);
+  logger.setLevel(LogLevel.DEBUG);
 }
 
 

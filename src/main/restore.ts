@@ -1,11 +1,15 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { shell } from 'electron';
+import { shell, app } from 'electron';
 import { prepare, type Asset } from './database.js';
 import { validateFilePathForCommand, sanitizeCommandArg, validatePathForShell } from './utils/command-security.js';
 import { validateExternalUrl } from './utils/security.js';
 
 const execPromise = promisify(exec);
+
+// Production-silent logging - only log in development
+const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
+const logError = (...args: any[]) => console.error(...args); // Always log errors
 
 /**
  * Global cancellation flag for restoration operations
@@ -19,7 +23,7 @@ let currentRestorationId: string | null = null;
  */
 export function cancelRestoration(): void {
   isRestorationCancelled = true;
-  console.log('[Restore] Restoration cancelled by user');
+  log('[Restore] Restoration cancelled by user');
 }
 
 /**
@@ -35,7 +39,7 @@ export function isRestorationCancelledCheck(): boolean {
 export function resetRestorationState(restorationId: string): void {
   isRestorationCancelled = false;
   currentRestorationId = restorationId;
-  console.log(`[Restore] Starting restoration ${restorationId}`);
+  log(`[Restore] Starting restoration ${restorationId}`);
 }
 
 /**
@@ -46,7 +50,7 @@ async function waitForClaudeCodeInitialization(): Promise<void> {
   const pollInterval = 500; // Check every 500ms
   const startTime = Date.now();
 
-  console.log('[Restore] Waiting for Claude Code process to start...');
+  log('[Restore] Waiting for Claude Code process to start...');
 
   while (Date.now() - startTime < maxWaitTime) {
     try {
@@ -60,7 +64,7 @@ async function waitForClaudeCodeInitialization(): Promise<void> {
           );
 
           if (wmicOutput.toLowerCase().includes('claude')) {
-            console.log('[Restore] ✓ Claude Code process detected and running');
+            log('[Restore] ✓ Claude Code process detected and running');
             // Give it a moment more to fully initialize
             await new Promise(resolve => setTimeout(resolve, 1000));
             return;
@@ -73,7 +77,7 @@ async function waitForClaudeCodeInitialization(): Promise<void> {
         try {
           const { stdout } = await execPromise('ps aux | grep -i claude | grep -v grep');
           if (stdout.trim()) {
-            console.log('[Restore] ✓ Claude Code process detected and running');
+            log('[Restore] ✓ Claude Code process detected and running');
             await new Promise(resolve => setTimeout(resolve, 1000));
             return;
           }
@@ -90,7 +94,7 @@ async function waitForClaudeCodeInitialization(): Promise<void> {
   }
 
   // Timeout reached - Claude Code might still be starting, but proceed anyway
-  console.log('[Restore] ⚠ Timeout waiting for Claude Code, proceeding with restoration...');
+  log('[Restore] ⚠ Timeout waiting for Claude Code, proceeding with restoration...');
 }
 
 interface CaptureRow {
@@ -143,12 +147,12 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
     throw new Error(`Capture with ID ${captureId} not found`);
   }
 
-  console.log(`[Restore] Restoring workspace: ${capture.name} with ${assets.length} assets`);
+  log(`[Restore] Restoring workspace: ${capture.name} with ${assets.length} assets`);
   sendRestoreProgress(`Starting restoration of ${assets.length} assets...`);
   
   // Check for cancellation before starting
   if (isRestorationCancelled) {
-    console.log('[Restore] Restoration was cancelled before starting');
+    log('[Restore] Restoration was cancelled before starting');
     sendRestoreProgress('Restoration cancelled');
     throw new Error('Restoration cancelled');
   }
@@ -174,7 +178,7 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
         notesAssets.push(asset);
         break;
       default:
-        console.log(`Unknown asset type: ${asset.asset_type}`);
+        log(`Unknown asset type: ${asset.asset_type}`);
     }
   }
 
@@ -185,7 +189,7 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
   let hasClaudeCode = false;
   for (let i = 0; i < terminalAssets.length; i++) {
     if (isRestorationCancelled) {
-      console.log('[Restore] Restoration cancelled during terminal restoration');
+      log('[Restore] Restoration cancelled during terminal restoration');
       sendRestoreProgress('Restoration cancelled');
       throw new Error('Restoration cancelled');
     }
@@ -204,7 +208,7 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
 
   // Step 2: If Claude Code was detected, wait for it to initialize before opening visual assets
   if (hasClaudeCode) {
-    console.log('[Restore] Claude Code detected, waiting for initialization...');
+    log('[Restore] Claude Code detected, waiting for initialization...');
     sendRestoreProgress('Waiting for Claude Code to initialize...');
     await waitForClaudeCodeInitialization();
   }
@@ -215,7 +219,7 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
   }
   for (let i = 0; i < codeAssets.length; i++) {
     if (isRestorationCancelled) {
-      console.log('[Restore] Restoration cancelled during code restoration');
+      log('[Restore] Restoration cancelled during code restoration');
       sendRestoreProgress('Restoration cancelled');
       throw new Error('Restoration cancelled');
     }
@@ -233,7 +237,7 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
   }
   for (let i = 0; i < notesAssets.length; i++) {
     if (isRestorationCancelled) {
-      console.log('[Restore] Restoration cancelled during notes restoration');
+      log('[Restore] Restoration cancelled during notes restoration');
       sendRestoreProgress('Restoration cancelled');
       throw new Error('Restoration cancelled');
     }
@@ -248,22 +252,22 @@ export async function restoreWorkspace(captureId: number): Promise<void> {
   // Step 5: Restore browser/visual assets LAST (after Claude Code is ready)
   if (browserAssets.length > 0) {
     if (isRestorationCancelled) {
-      console.log('[Restore] Restoration cancelled before browser restoration');
+      log('[Restore] Restoration cancelled before browser restoration');
       sendRestoreProgress('Restoration cancelled');
       throw new Error('Restoration cancelled');
     }
-    console.log('[Restore] Restoring visual assets (browsers)...');
+    log('[Restore] Restoring visual assets (browsers)...');
     sendRestoreProgress(`Restoring ${browserAssets.length} browser tab(s) with rate limiting...`);
     await restoreBrowserAssets(browserAssets);
   }
 
   if (isRestorationCancelled) {
-    console.log('[Restore] Restoration was cancelled');
+    log('[Restore] Restoration was cancelled');
     sendRestoreProgress('Restoration cancelled');
     throw new Error('Restoration cancelled');
   }
 
-  console.log('[Restore] Workspace restoration complete');
+  log('[Restore] Workspace restoration complete');
   sendRestoreProgress('Restoration complete!');
 }
 
@@ -276,7 +280,7 @@ async function restoreCodeAsset(asset: Asset): Promise<void> {
 
         // If this is a captured IDE session, use comprehensive restore
         if (metadata.ideName && (metadata.ideName === 'VSCode' || metadata.ideName === 'Cursor')) {
-          console.log(`[Restore] Restoring ${metadata.ideName} session...`);
+          log(`[Restore] Restoring ${metadata.ideName} session...`);
 
           const { restoreIDESession } = await import('./ide-capture.js');
 
@@ -290,7 +294,7 @@ async function restoreCodeAsset(asset: Asset): Promise<void> {
           };
 
           await restoreIDESession(ideSession);
-          console.log(`[Restore] ${metadata.ideName} restoration complete`);
+          log(`[Restore] ${metadata.ideName} restoration complete`);
           return;
         }
       } catch (parseError) {
@@ -304,7 +308,7 @@ async function restoreCodeAsset(asset: Asset): Promise<void> {
       return;
     }
 
-    console.log(`[Restore] Opening file/folder: ${asset.path}`);
+    log(`[Restore] Opening file/folder: ${asset.path}`);
 
     if (process.platform === 'win32') {
       // Windows: Try code/cursor command first, then fallback
@@ -353,7 +357,7 @@ async function restoreCodeAsset(asset: Asset): Promise<void> {
       });
     }
 
-    console.log(`[Restore] Opened code file/folder: ${asset.path}`);
+    log(`[Restore] Opened code file/folder: ${asset.path}`);
   } catch (error) {
     console.error('Failed to restore code asset:', error);
     throw error;
@@ -368,7 +372,7 @@ async function restoreTerminalAsset(asset: Asset): Promise<void> {
 
       // Helper to log to both console and renderer
       const logDebug = (...args: any[]) => {
-        console.log(...args);
+        log(...args);
         try {
           const logToRenderer = (global as any).logToRenderer;
           if (logToRenderer) logToRenderer(...args);
@@ -422,7 +426,7 @@ async function restoreTerminalAsset(asset: Asset): Promise<void> {
       if (metadata && metadata.shellType) {
         // Log to both console and renderer
         const logDebug = (...args: any[]) => {
-          console.log(...args);
+          log(...args);
           try {
             const logToRenderer = (global as any).logToRenderer;
             if (logToRenderer) logToRenderer(...args);
@@ -523,7 +527,7 @@ async function restoreTerminalAsset(asset: Asset): Promise<void> {
           throw restoreError; // Re-throw to propagate
         }
 
-        console.log(`Restored ${metadata.shellType} terminal session${metadata.currentDirectory ? ` at ${metadata.currentDirectory}` : ''}${metadata.runningCommands?.length ? ` with ${metadata.runningCommands.length} running process(es)` : ''}`);
+        log(`Restored ${metadata.shellType} terminal session${metadata.currentDirectory ? ` at ${metadata.currentDirectory}` : ''}${metadata.runningCommands?.length ? ` with ${metadata.runningCommands.length} running process(es)` : ''}`);
         return;
       }
     } catch (enhancedError: any) {
@@ -592,7 +596,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
 
   for (const asset of assets) {
     if (isRestorationCancelled) {
-      console.log('[Browser Restore] Restoration cancelled during asset grouping');
+      log('[Browser Restore] Restoration cancelled during asset grouping');
       throw new Error('Restoration cancelled');
     }
     
@@ -601,7 +605,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
 
       // Skip debugging disabled notices
       if (metadata.debuggingEnabled === false) {
-        console.log(`[Browser Restore] Skipping browser notice: ${asset.title}`);
+        log(`[Browser Restore] Skipping browser notice: ${asset.title}`);
         continue;
       }
 
@@ -612,7 +616,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
 
       // Skip internal browser URLs
       if (url.startsWith('chrome://') || url.startsWith('edge://')) {
-        console.log(`[Browser Restore] Skipped internal browser URL: ${asset.title}`);
+        log(`[Browser Restore] Skipped internal browser URL: ${asset.title}`);
         continue;
       }
 
@@ -637,7 +641,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
   // Restore each browser group with rate limiting
   for (const [browserKey, group] of browserGroups.entries()) {
     if (isRestorationCancelled) {
-      console.log('[Browser Restore] Restoration cancelled before processing browser group');
+      log('[Browser Restore] Restoration cancelled before processing browser group');
       throw new Error('Restoration cancelled');
     }
     
@@ -657,7 +661,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
       continue;
     }
 
-    console.log(`[Browser Restore] Restoring ${urls.length} tab(s) in ${browserName} with rate limiting...`);
+    log(`[Browser Restore] Restoring ${urls.length} tab(s) in ${browserName} with rate limiting...`);
 
     try {
       // Try to use CDP if we have a debugging port and browser is already running
@@ -668,7 +672,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
           
           if (targets.length > 0) {
             // Browser is already running with debugging - use CDP to open tabs
-            console.log(`[Browser Restore] Browser ${browserName} is running with debugging on port ${group.debuggingPort}, using CDP to open tabs...`);
+            log(`[Browser Restore] Browser ${browserName} is running with debugging on port ${group.debuggingPort}, using CDP to open tabs...`);
             
             // Connect without a target to access the Target domain
             const client = await CDP({ port: group.debuggingPort });
@@ -680,7 +684,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
             for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
               if (isRestorationCancelled) {
                 await client.close();
-                console.log('[Browser Restore] Restoration cancelled during tab batch opening');
+                log('[Browser Restore] Restoration cancelled during tab batch opening');
                 throw new Error('Restoration cancelled');
               }
               
@@ -688,7 +692,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
               const batchEnd = Math.min(batchStart + BATCH_SIZE, urls.length);
               const batch = urls.slice(batchStart, batchEnd);
               
-              console.log(`[Browser Restore] Opening batch ${batchIndex + 1}/${totalBatches} (${batch.length} tabs)...`);
+              log(`[Browser Restore] Opening batch ${batchIndex + 1}/${totalBatches} (${batch.length} tabs)...`);
               
               // Open all tabs in this batch
               const openedTargetIds: string[] = [];
@@ -700,7 +704,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
                 try {
                   const result = await client.Target.createTarget({ url });
                   openedTargetIds.push(result.targetId);
-                  console.log(`[Browser Restore]   ✓ Created tab: ${url.substring(0, 60)}...`);
+                  log(`[Browser Restore]   ✓ Created tab: ${url.substring(0, 60)}...`);
                   
                   // Small delay between tabs in same batch
                   await new Promise(resolve => setTimeout(resolve, 150));
@@ -711,26 +715,26 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
               
               // Wait for this batch to load before opening next batch
               if (batchIndex < totalBatches - 1) { // Don't wait after last batch
-                console.log(`[Browser Restore] Waiting for batch ${batchIndex + 1} to load before opening next batch...`);
+                log(`[Browser Restore] Waiting for batch ${batchIndex + 1} to load before opening next batch...`);
                 sendRestoreProgress(`Batch ${batchIndex + 1}/${totalBatches} opened, waiting for tabs to load...`);
                 const tabsLoaded = await waitForTabsToLoad(group.debuggingPort, openedTargetIds.length, 8000);
                 if (!tabsLoaded) {
                   await client.close();
                   throw new Error('Restoration cancelled');
                 }
-                console.log(`[Browser Restore] ✓ Batch ${batchIndex + 1} loaded, proceeding to next batch...`);
+                log(`[Browser Restore] ✓ Batch ${batchIndex + 1} loaded, proceeding to next batch...`);
               }
             }
             
             await client.close();
-            console.log(`[Browser Restore] ✓ Opened ${urls.length} tab(s) in ${browserName} via CDP (${totalBatches} batch(es))`);
+            log(`[Browser Restore] ✓ Opened ${urls.length} tab(s) in ${browserName} via CDP (${totalBatches} batch(es))`);
             continue;
           }
         } catch (cdpErr: any) {
           if (cdpErr?.message === 'Restoration cancelled') {
             throw cdpErr;
           }
-          console.log(`[Browser Restore] CDP not available (browser may not be running), using spawn method...`, cdpErr?.message || cdpErr);
+          log(`[Browser Restore] CDP not available (browser may not be running), using spawn method...`, cdpErr?.message || cdpErr);
         }
       }
 
@@ -744,7 +748,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
         
         for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
           if (isRestorationCancelled) {
-            console.log('[Browser Restore] Restoration cancelled during tab batch opening (spawn method)');
+            log('[Browser Restore] Restoration cancelled during tab batch opening (spawn method)');
             throw new Error('Restoration cancelled');
           }
           
@@ -752,7 +756,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
           const batchEnd = Math.min(batchStart + BATCH_SIZE, urls.length);
           const batch = urls.slice(batchStart, batchEnd);
           
-          console.log(`[Browser Restore] Opening batch ${batchIndex + 1}/${totalBatches} (${batch.length} tabs) using spawn...`);
+          log(`[Browser Restore] Opening batch ${batchIndex + 1}/${totalBatches} (${batch.length} tabs) using spawn...`);
           
           // Open all tabs in this batch
           for (let i = 0; i < batch.length; i++) {
@@ -763,11 +767,11 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
             if (batchIndex === 0 && i === 0) {
               // First URL: spawn new browser instance
               spawn(browserPath, [url], { detached: true, stdio: 'ignore' });
-              console.log(`[Browser Restore]   ✓ Opened first tab: ${url.substring(0, 60)}...`);
+              log(`[Browser Restore]   ✓ Opened first tab: ${url.substring(0, 60)}...`);
             } else {
               // Subsequent URLs: add to existing instance
               spawn(browserPath, [url], { detached: true, stdio: 'ignore' });
-              console.log(`[Browser Restore]   ✓ Opened tab ${i + 1}/${batch.length} in batch`);
+              log(`[Browser Restore]   ✓ Opened tab ${i + 1}/${batch.length} in batch`);
             }
             // Small delay between tabs in same batch
             await new Promise(resolve => setTimeout(resolve, 200));
@@ -775,14 +779,14 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
           
           // Wait for this batch to load before opening next batch
           if (batchIndex < totalBatches - 1) {
-            console.log(`[Browser Restore] Waiting for batch ${batchIndex + 1} to load (3 seconds)...`);
+            log(`[Browser Restore] Waiting for batch ${batchIndex + 1} to load (3 seconds)...`);
             sendRestoreProgress(`Batch ${batchIndex + 1}/${totalBatches} opened, waiting for tabs to load...`);
             await new Promise(resolve => setTimeout(resolve, 3000));
-            console.log(`[Browser Restore] ✓ Batch ${batchIndex + 1} wait complete, proceeding to next batch...`);
+            log(`[Browser Restore] ✓ Batch ${batchIndex + 1} wait complete, proceeding to next batch...`);
           }
         }
         
-        console.log(`[Browser Restore] ✓ Opened ${urls.length} tab(s) in ${browserName} via spawn (${totalBatches} batch(es))`);
+        log(`[Browser Restore] ✓ Opened ${urls.length} tab(s) in ${browserName} via spawn (${totalBatches} batch(es))`);
       } else {
         // Fallback: open URLs one by one in default browser with rate limiting
         const BATCH_SIZE = 15;
@@ -790,7 +794,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
         
         for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
           if (isRestorationCancelled) {
-            console.log('[Browser Restore] Restoration cancelled during tab batch opening (default browser)');
+            log('[Browser Restore] Restoration cancelled during tab batch opening (default browser)');
             throw new Error('Restoration cancelled');
           }
           
@@ -798,7 +802,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
           const batchEnd = Math.min(batchStart + BATCH_SIZE, urls.length);
           const batch = urls.slice(batchStart, batchEnd);
           
-          console.log(`[Browser Restore] Opening batch ${batchIndex + 1}/${totalBatches} (${batch.length} tabs) in default browser...`);
+          log(`[Browser Restore] Opening batch ${batchIndex + 1}/${totalBatches} (${batch.length} tabs) in default browser...`);
           
           for (const url of batch) {
             if (validateExternalUrl(url)) {
@@ -815,7 +819,7 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
           }
         }
         
-        console.log(`[Browser Restore] ✓ Opened ${urls.length} tab(s) in default browser (${totalBatches} batch(es))`);
+        log(`[Browser Restore] ✓ Opened ${urls.length} tab(s) in default browser (${totalBatches} batch(es))`);
       }
     } catch (err) {
       if (err instanceof Error && err.message === 'Restoration cancelled') {
@@ -861,19 +865,19 @@ async function restoreBrowserAssets(assets: Asset[]): Promise<void> {
 async function restoreBrowserAsset(asset: Asset): Promise<void> {
   // This function is kept for individual asset restoration
   // For workspace restoration, restoreBrowserAssets is used instead
-  console.log(`[Browser Restore] Restoring individual browser asset: ${asset.title} (ID: ${asset.id})`);
+  log(`[Browser Restore] Restoring individual browser asset: ${asset.title} (ID: ${asset.id})`);
   try {
     const metadata = asset.metadata ? JSON.parse(asset.metadata) : {};
-    console.log(`[Browser Restore] Asset metadata:`, JSON.stringify(metadata, null, 2));
+    log(`[Browser Restore] Asset metadata:`, JSON.stringify(metadata, null, 2));
     
     // Check if this is a debugging disabled notice
     if (metadata.debuggingEnabled === false) {
-      console.log(`[Browser Restore] This is a debugging disabled notice, cannot restore`);
+      log(`[Browser Restore] This is a debugging disabled notice, cannot restore`);
       throw new Error('Cannot restore: Browser debugging is not enabled. Please enable remote debugging and try again.');
     }
     
     const url = metadata.url || asset.path;
-    console.log(`[Browser Restore] URL to restore: ${url}`);
+    log(`[Browser Restore] URL to restore: ${url}`);
     
     if (!url) {
       throw new Error('No URL found in asset metadata or path');
@@ -890,7 +894,7 @@ async function restoreBrowserAsset(asset: Asset): Promise<void> {
     
     // Use the grouped restore function which handles CDP and fallbacks
     await restoreBrowserAssets([asset]);
-    console.log(`[Browser Restore] ✓ Successfully restored browser asset: ${asset.title}`);
+    log(`[Browser Restore] ✓ Successfully restored browser asset: ${asset.title}`);
   } catch (error) {
     console.error(`[Browser Restore] ✗ Failed to restore browser asset ${asset.id}:`, error);
     throw error;
@@ -902,27 +906,27 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
     const metadata = asset.metadata ? JSON.parse(asset.metadata) : {};
     const appName = metadata.appName || 'Unknown';
 
-    console.log(`[Note Restore] Restoring ${appName} note asset`);
+    log(`[Note Restore] Restoring ${appName} note asset`);
 
     // Handle different note apps
     switch (appName) {
       case 'Notion':
         {
           const pageTitle = metadata.title || 'Unknown Page';
-          console.log(`[Note Restore] Restoring Notion page: "${pageTitle}"`);
+          log(`[Note Restore] Restoring Notion page: "${pageTitle}"`);
           
           if (metadata.url) {
             // If we have a URL, validate and open it directly
             if (validateExternalUrl(metadata.url)) {
               await shell.openExternal(metadata.url);
-              console.log(`[Note Restore] ✓ Opened Notion URL: ${metadata.url}`);
+              log(`[Note Restore] ✓ Opened Notion URL: ${metadata.url}`);
             } else {
               console.warn(`[Note Restore] Skipping invalid Notion URL: ${metadata.url}`);
             }
           } else {
             // No URL, just open the Notion app
-            console.log(`[Note Restore] Opening Notion app (captured page: "${pageTitle}")`);
-            console.log(`[Note Restore] Note: You'll need to manually navigate to the page`);
+            log(`[Note Restore] Opening Notion app (captured page: "${pageTitle}")`);
+            log(`[Note Restore] Note: You'll need to manually navigate to the page`);
             
             if (process.platform === 'win32') {
               const { exec } = await import('child_process');
@@ -945,7 +949,7 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
               for (const p of notionPaths) {
                 if (fs.existsSync(p)) {
                   notionPath = p;
-                  console.log(`[Note Restore] Found Notion at: ${notionPath}`);
+                  log(`[Note Restore] Found Notion at: ${notionPath}`);
                   break;
                 }
               }
@@ -955,7 +959,7 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
                   console.warn('[Note Restore] ✗ Could not open Notion:', error.message);
                   console.warn('[Note Restore] Tried path:', notionPath);
                 } else {
-                  console.log(`[Note Restore] ✓ Opened Notion app - Look for page: "${pageTitle}"`);
+                  log(`[Note Restore] ✓ Opened Notion app - Look for page: "${pageTitle}"`);
                 }
               });
             } else if (process.platform === 'darwin') {
@@ -964,7 +968,7 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
                 if (error) {
                   console.warn('[Note Restore] ✗ Could not open Notion:', error.message);
                 } else {
-                  console.log(`[Note Restore] ✓ Opened Notion app on macOS - Look for page: "${pageTitle}"`);
+                  log(`[Note Restore] ✓ Opened Notion app on macOS - Look for page: "${pageTitle}"`);
                 }
               });
             }
@@ -977,7 +981,7 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
           // Open specific file in Notepad
           if (validatePathForShell(metadata.filePath)) {
             await shell.openPath(metadata.filePath);
-            console.log(`[Note Restore] Opened Notepad file: ${metadata.filePath}`);
+            log(`[Note Restore] Opened Notepad file: ${metadata.filePath}`);
           } else {
             console.warn(`[Note Restore] Invalid file path: ${metadata.filePath}`);
           }
@@ -988,7 +992,7 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
             if (error) {
               console.warn('[Note Restore] Could not open Notepad:', error);
             } else {
-              console.log('[Note Restore] Opened new Notepad window');
+              log('[Note Restore] Opened new Notepad window');
             }
           });
         }
@@ -1001,7 +1005,7 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
             if (error) {
               console.warn('[Note Restore] Could not open Apple Notes:', error);
             } else {
-              console.log('[Note Restore] Opened Apple Notes');
+              log('[Note Restore] Opened Apple Notes');
             }
           });
         }
@@ -1012,19 +1016,19 @@ async function restoreNotesAsset(asset: Asset): Promise<void> {
         if (metadata.url) {
           if (validateExternalUrl(metadata.url)) {
             await shell.openExternal(metadata.url);
-            console.log(`[Note Restore] Opened notes URL: ${metadata.url}`);
+            log(`[Note Restore] Opened notes URL: ${metadata.url}`);
           } else {
             console.warn(`[Note Restore] Skipping invalid URL: ${metadata.url}`);
           }
         } else if (asset.path) {
           if (validatePathForShell(asset.path)) {
             await shell.openPath(asset.path);
-            console.log(`[Note Restore] Opened notes file: ${asset.path}`);
+            log(`[Note Restore] Opened notes file: ${asset.path}`);
           } else {
             console.warn(`[Note Restore] Invalid file path: ${asset.path}`);
           }
         } else {
-          console.log('[Note Restore] Notes asset has no path or URL to restore');
+          log('[Note Restore] Notes asset has no path or URL to restore');
         }
         break;
     }
@@ -1044,7 +1048,7 @@ export async function restoreAsset(assetId: number): Promise<void> {
 
   // Helper to log to both console and renderer
   const logDebug = (...args: any[]) => {
-    console.log(...args);
+    log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -1153,8 +1157,8 @@ export async function restoreAsset(assetId: number): Promise<void> {
       await restoreNotesAsset(asset);
       break;
     default:
-      console.log(`Unknown asset type: ${asset.asset_type}`);
+      log(`Unknown asset type: ${asset.asset_type}`);
   }
 
-  console.log('Asset restoration complete');
+  log('Asset restoration complete');
 }

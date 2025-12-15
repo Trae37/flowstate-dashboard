@@ -256,9 +256,14 @@ async function setupNewDayAutoCapture() {
 // EPIPE errors occur when writing to closed stdout/stderr streams in Electron
 // We wrap the underlying stream writes to catch EPIPE errors
 function safeLog(...args: any[]): void {
+  // Silence debug logs in production builds
+  if (app.isPackaged) {
+    return;
+  }
+
   try {
     // Use a custom format that goes through our safe path
-    const message = args.map(arg => 
+    const message = args.map(arg =>
       typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
     ).join(' ') + '\n';
     

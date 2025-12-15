@@ -1,8 +1,13 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { app } from 'electron';
 import { prepare, type Capture, type Asset } from './database.js';
 
 const execPromise = promisify(exec);
+
+// Production-silent logging - only log in development
+const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
+const logError = (...args: any[]) => console.error(...args);
 
 type CaptureSummary = {
   vsCode: number;
@@ -29,7 +34,7 @@ const captureSteps: Array<{
 ];
 
 const logCapture = (...args: any[]) => {
-  console.log(...args);
+  log(...args);
   try {
     const logToRenderer = (global as any).logToRenderer;
     if (logToRenderer) logToRenderer(...args);
@@ -542,7 +547,7 @@ async function captureNoteSessions(captureId: number): Promise<Asset[]> {
 
   // TEMPORARY: Notes capture disabled due to hanging issue
   // TODO: Fix note-integration.js hanging and re-enable
-  console.log('[Note Capture] Notes capture temporarily disabled');
+  log('[Note Capture] Notes capture temporarily disabled');
   return assets;
 
   // try {
@@ -550,7 +555,7 @@ async function captureNoteSessions(captureId: number): Promise<Asset[]> {
   //   const { captureNoteSessions: getNotes } = await import('./note-integration.js');
 
   //   const sessions = await getNotes();
-  //   console.log(`[Note Capture] Captured ${sessions.length} note session(s)`);
+  //   log(`[Note Capture] Captured ${sessions.length} note session(s)`);
 
   //   for (const session of sessions) {
   //     // Create a cleaner title for the asset card
@@ -574,7 +579,7 @@ async function captureNoteSessions(captureId: number): Promise<Asset[]> {
   //         }),
   //     });
 
-  //     console.log(`[Note Capture] Saved note asset: ${assetTitle}`);
+  //     log(`[Note Capture] Saved note asset: ${assetTitle}`);
   //   }
   // } catch (error) {
   //   console.warn('[Note Capture] Could not capture note sessions:', error);
@@ -677,7 +682,7 @@ async function captureTerminalSessions(captureId: number): Promise<Asset[]> {
   
   // Helper to log to both console and renderer
   const logDebug = (...args: any[]) => {
-    console.log(...args);
+    log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);
@@ -927,7 +932,7 @@ async function captureBrowserTabs(captureId: number): Promise<Asset[]> {
 
   // Helper to log to both console and renderer (matches terminal capture pattern)
   const logCapture = (...args: any[]) => {
-    console.log(...args);
+    log(...args);
     try {
       const logToRenderer = (global as any).logToRenderer;
       if (logToRenderer) logToRenderer(...args);

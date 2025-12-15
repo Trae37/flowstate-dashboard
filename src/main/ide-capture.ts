@@ -8,8 +8,13 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { app } from 'electron';
 
 const execPromise = promisify(exec);
+
+// Production-silent logging - only log in development
+const log = (...args: any[]) => { if (!app.isPackaged) log(...args); };
+const logError = (...args: any[]) => console.error(...args);
 
 export interface IDESession {
   ideName: 'VSCode' | 'Cursor' | 'Unknown';
@@ -45,7 +50,7 @@ export interface IDECaptureResult {
  * Main function to capture all IDE sessions
  */
 export async function captureIDESessions(): Promise<IDECaptureResult> {
-  console.log('[IDE Capture] Starting IDE capture...');
+  log('[IDE Capture] Starting IDE capture...');
 
   const sessions: IDESession[] = [];
 
@@ -57,7 +62,7 @@ export async function captureIDESessions(): Promise<IDECaptureResult> {
   const cursorSessions = await captureCursor();
   sessions.push(...cursorSessions);
 
-  console.log(`[IDE Capture] Captured ${sessions.length} IDE session(s)`);
+  log(`[IDE Capture] Captured ${sessions.length} IDE session(s)`);
 
   return {
     sessions,
@@ -75,11 +80,11 @@ async function captureVSCode(): Promise<IDESession[]> {
     // Check if VS Code is running
     const isRunning = await isIDERunning('Code.exe', 'Code');
     if (!isRunning) {
-      console.log('[IDE Capture] VS Code not running');
+      log('[IDE Capture] VS Code not running');
       return sessions;
     }
 
-    console.log('[IDE Capture] VS Code detected, capturing state...');
+    log('[IDE Capture] VS Code detected, capturing state...');
 
     // Get VS Code state directory
     const stateDir = path.join(
@@ -109,11 +114,11 @@ async function captureCursor(): Promise<IDESession[]> {
     // Check if Cursor is running
     const isRunning = await isIDERunning('Cursor.exe', 'Cursor');
     if (!isRunning) {
-      console.log('[IDE Capture] Cursor not running');
+      log('[IDE Capture] Cursor not running');
       return sessions;
     }
 
-    console.log('[IDE Capture] Cursor detected, capturing state...');
+    log('[IDE Capture] Cursor detected, capturing state...');
 
     // Get Cursor state directory
     const stateDir = path.join(
@@ -148,9 +153,9 @@ async function isIDERunning(
         `tasklist /FI "IMAGENAME eq ${sanitizedProcess}"`
       );
       const isRunning = stdout.includes(windowsProcessName);
-      console.log(`[IDE Capture] Process check for ${windowsProcessName}: ${isRunning ? 'FOUND' : 'NOT FOUND'}`);
+      log(`[IDE Capture] Process check for ${windowsProcessName}: ${isRunning ? 'FOUND' : 'NOT FOUND'}`);
       if (!isRunning) {
-        console.log(`[IDE Capture] Tasklist output (first 500 chars): ${stdout.substring(0, 500)}`);
+        log(`[IDE Capture] Tasklist output (first 500 chars): ${stdout.substring(0, 500)}`);
       }
       return isRunning;
     } else if (process.platform === 'darwin') {
@@ -158,7 +163,7 @@ async function isIDERunning(
         `ps aux | grep "${macProcessName}" | grep -v grep || true`
       );
       const isRunning = stdout.trim().length > 0;
-      console.log(`[IDE Capture] Process check for ${macProcessName}: ${isRunning ? 'FOUND' : 'NOT FOUND'}`);
+      log(`[IDE Capture] Process check for ${macProcessName}: ${isRunning ? 'FOUND' : 'NOT FOUND'}`);
       return isRunning;
     }
   } catch (error) {
@@ -207,7 +212,7 @@ async function captureIDEState(
 
     // Read workspace state to get currently open workspace
     const workspaceStoragePath = path.join(stateDir, 'workspaceStorage');
-    console.log(`[IDE Capture] Checking workspace storage: ${workspaceStoragePath}`);
+    log(`[IDE Capture] Checking workspace storage: ${workspaceStoragePath}`);
     if (fs.existsSync(workspaceStoragePath)) {
       const workspaces = fs.readdirSync(workspaceStoragePath);
 
@@ -254,7 +259,7 @@ async function captureIDEState(
         });
 
       // Process the most recently active workspace, or fall back to most recent if none are active
-      console.log(`[IDE Capture] Found ${activeWorkspaces.length} active workspace(s)`);
+      log(`[IDE Capture] Found ${activeWorkspaces.length} active workspace(s)`);
       
       // If no active workspace found, try to get the most recently modified workspace as fallback
       let workspaceToProcess = activeWorkspaces[0];
@@ -280,7 +285,7 @@ async function captureIDEState(
         
         workspaceToProcess = allWorkspaces[0] || null;
         if (workspaceToProcess) {
-          console.log(`[IDE Capture] No active workspace found, using most recent: ${workspaceToProcess.workspaceId}`);
+          log(`[IDE Capture] No active workspace found, using most recent: ${workspaceToProcess.workspaceId}`);
         }
       }
       
@@ -288,22 +293,22 @@ async function captureIDEState(
         const workspaceId = workspaceToProcess.workspaceId;
         const workspaceJsonPath = path.join(workspaceStoragePath, workspaceId, 'workspace.json');
 
-        console.log(`[IDE Capture] Processing workspace: ${workspaceId}`);
-        console.log(`[IDE Capture] Workspace JSON path: ${workspaceJsonPath}`);
-        console.log(`[IDE Capture] JSON exists: ${fs.existsSync(workspaceJsonPath)}`);
+        log(`[IDE Capture] Processing workspace: ${workspaceId}`);
+        log(`[IDE Capture] Workspace JSON path: ${workspaceJsonPath}`);
+        log(`[IDE Capture] JSON exists: ${fs.existsSync(workspaceJsonPath)}`);
 
         if (fs.existsSync(workspaceJsonPath)) {
           try {
             const workspaceData = JSON.parse(fs.readFileSync(workspaceJsonPath, 'utf-8'));
-            console.log(`[IDE Capture] Workspace data:`, workspaceData);
+            log(`[IDE Capture] Workspace data:`, workspaceData);
 
             // Get workspace folder path
             if (workspaceData.folder) {
               const folderPath = decodeURIPath(workspaceData.folder);
-              console.log(`[IDE Capture] Decoded folder path: ${folderPath}`);
+              log(`[IDE Capture] Decoded folder path: ${folderPath}`);
               if (folderPath && !session.workspacePaths.includes(folderPath)) {
                 session.workspacePaths.push(folderPath);
-                console.log(`[IDE Capture] Added workspace path: ${folderPath}`);
+                log(`[IDE Capture] Added workspace path: ${folderPath}`);
               }
             }
 
@@ -457,7 +462,7 @@ async function captureIDEState(
             path: contextFilePath,
             content: content,
           };
-          console.log(`[IDE Capture] ${isUpdate ? 'Updated' : 'Created'} intelligent context file: ${contextFilePath}`);
+          log(`[IDE Capture] ${isUpdate ? 'Updated' : 'Created'} intelligent context file: ${contextFilePath}`);
         } else if (fs.existsSync(contextFilePath)) {
           // If no analysis but file exists, just read it (preserve user edits)
           const content = fs.readFileSync(contextFilePath, 'utf-8');
@@ -465,7 +470,7 @@ async function captureIDEState(
             path: contextFilePath,
             content: content,
           };
-          console.log(`[IDE Capture] Found existing context file (no analysis available): ${contextFilePath}`);
+          log(`[IDE Capture] Found existing context file (no analysis available): ${contextFilePath}`);
         }
       } catch (err) {
         // Log the error but don't prevent session from being returned
@@ -477,20 +482,20 @@ async function captureIDEState(
     // If we found any workspace info, return the session
     // IMPORTANT: Context file generation errors should NOT prevent session from being returned
     if (session.workspacePaths.length > 0 || session.recentWorkspaces.length > 0) {
-      console.log(`[IDE Capture] ${ideName} session captured:`);
-      console.log(`  Workspaces: ${session.workspacePaths.length}`);
-      console.log(`  Open files: ${session.openFiles.length}`);
-      console.log(`  Recent workspaces: ${session.recentWorkspaces.length}`);
-      console.log(`  Context file: ${session.contextFile ? 'Yes' : 'No'}`);
+      log(`[IDE Capture] ${ideName} session captured:`);
+      log(`  Workspaces: ${session.workspacePaths.length}`);
+      log(`  Open files: ${session.openFiles.length}`);
+      log(`  Recent workspaces: ${session.recentWorkspaces.length}`);
+      log(`  Context file: ${session.contextFile ? 'Yes' : 'No'}`);
       return session;
     }
 
     // If no workspace detected, return null (don't capture empty sessions)
-    console.log(`[IDE Capture] No workspace detected for ${ideName}`);
-    console.log(`[IDE Capture] Debug info: workspaceStoragePath exists: ${fs.existsSync(workspaceStoragePath)}`);
+    log(`[IDE Capture] No workspace detected for ${ideName}`);
+    log(`[IDE Capture] Debug info: workspaceStoragePath exists: ${fs.existsSync(workspaceStoragePath)}`);
     if (fs.existsSync(workspaceStoragePath)) {
       const workspaces = fs.readdirSync(workspaceStoragePath);
-      console.log(`[IDE Capture] Debug info: Found ${workspaces.length} workspace(s) in storage`);
+      log(`[IDE Capture] Debug info: Found ${workspaces.length} workspace(s) in storage`);
     }
     return null;
   } catch (error) {
@@ -529,7 +534,7 @@ function decodeURIPath(uri: string): string {
  * Restore IDE session
  */
 export async function restoreIDESession(session: IDESession): Promise<void> {
-  console.log(`[IDE Restore] Restoring ${session.ideName} session...`);
+  log(`[IDE Restore] Restoring ${session.ideName} session...`);
 
   try {
     // Restore and optionally regenerate context file
@@ -653,13 +658,13 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
           content += `*Auto-generated by FlowState. Edit to add more context.*\n`;
 
           fs.writeFileSync(contextFilePath, content, 'utf-8');
-          console.log(`[IDE Restore] Regenerated context file with fresh analysis: ${contextFilePath}`);
+          log(`[IDE Restore] Regenerated context file with fresh analysis: ${contextFilePath}`);
         } else if (session.contextFile) {
           // If no analysis available, just append restore timestamp to existing file
           const timestamp = new Date().toISOString();
           const restoredContent = session.contextFile.content + `\n\n---\n**Restored**: ${timestamp}\n`;
           fs.writeFileSync(contextFilePath, restoredContent, 'utf-8');
-          console.log(`[IDE Restore] Updated context file with restore timestamp: ${contextFilePath}`);
+          log(`[IDE Restore] Updated context file with restore timestamp: ${contextFilePath}`);
         }
       } catch (err) {
         console.warn(`[IDE Restore] Could not restore context file:`, err);
@@ -681,7 +686,7 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
     // Restore workspaces
     for (const workspacePath of session.workspacePaths) {
       if (fs.existsSync(workspacePath)) {
-        console.log(`[IDE Restore] Opening workspace: ${workspacePath}`);
+        log(`[IDE Restore] Opening workspace: ${workspacePath}`);
 
         // Check if context file exists to open it with the workspace
         const contextFilePath = path.join(workspacePath, '.flowstate_context.md');
@@ -707,7 +712,7 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
         }
 
         if (shouldOpenContextFile) {
-          console.log(`[IDE Restore] ✓ Opened context file with workspace`);
+          log(`[IDE Restore] ✓ Opened context file with workspace`);
         }
       } else {
         console.warn(`[IDE Restore] Workspace path no longer exists: ${workspacePath}`);
@@ -718,7 +723,7 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
     if (session.workspacePaths.length === 0 && session.openFiles.length > 0) {
       const firstFile = session.openFiles[0].path;
       if (fs.existsSync(firstFile)) {
-        console.log(`[IDE Restore] Opening file: ${firstFile}`);
+        log(`[IDE Restore] Opening file: ${firstFile}`);
 
         if (process.platform === 'win32') {
           await execPromise(`"${ideCommand}" "${firstFile}"`).catch(() => {
@@ -737,7 +742,7 @@ export async function restoreIDESession(session: IDESession): Promise<void> {
       }
     }
 
-    console.log(`[IDE Restore] ${session.ideName} restoration complete`);
+    log(`[IDE Restore] ${session.ideName} restoration complete`);
   } catch (error) {
     console.error(`[IDE Restore] Failed to restore ${session.ideName}:`, error);
     throw error;

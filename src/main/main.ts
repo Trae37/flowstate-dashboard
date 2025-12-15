@@ -1062,6 +1062,7 @@ app.whenReady().then(async () => {
     setupNewDayAutoCapture();
 
     // TODO: Browser launch interceptor disabled - needs opt-in setting with user consent dialog
+    // See TODO.md "Handle cases where browser debugging is disabled" for tracking
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

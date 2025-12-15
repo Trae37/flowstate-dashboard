@@ -29,15 +29,8 @@ const captureSteps: Array<{
   { key: 'notes', runner: captureNoteSessions },
 ];
 
-const logCapture = (...args: any[]) => {
-  logger.log(...args);
-  try {
-    const logToRenderer = (global as any).logToRenderer;
-    if (logToRenderer) logToRenderer(...args);
-  } catch {
-    // no-op if renderer logging is unavailable
-  }
-};
+// Logger already forwards to renderer via setRendererLogger
+const logCapture = (...args: any[]) => logger.log(...args);
 
 async function createCaptureRecord(
   name: string,
@@ -638,17 +631,10 @@ async function captureVSCodeSessions(captureId: number): Promise<Asset[]> {
 async function captureTerminalSessions(captureId: number): Promise<Asset[]> {
   const assets: Asset[] = [];
   
-  // Helper to log to both console and renderer
-  const logDebug = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const logDebug = (...args: any[]) => logger.debug(...args);
 
   logDebug('[Capture] Starting enhanced terminal capture...');
-  logDebug('[Capture] logToRenderer available:', typeof (global as any).logToRenderer);
 
   try {
     // Import the enhanced terminal capture module
@@ -888,14 +874,8 @@ async function captureTerminalSessions(captureId: number): Promise<Asset[]> {
 async function captureBrowserTabs(captureId: number): Promise<Asset[]> {
   const assets: Asset[] = [];
 
-  // Helper to log to both console and renderer (matches terminal capture pattern)
-  const logCapture = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const logCapture = (...args: any[]) => logger.log(...args);
 
   logCapture('[Browser Capture] ============================================');
   logCapture('[Browser Capture] Starting browser capture...');

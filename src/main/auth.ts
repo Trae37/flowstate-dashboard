@@ -119,7 +119,7 @@ export async function loginUser(email: string, password: string): Promise<{ succ
     }
 
     // Find user by email
-    const userRow = prepare('SELECT id, email, username, password_hash, created_at, last_login, onboarding_completed FROM users WHERE email = ?').get(sanitizedEmail) as any;
+    const userRow = prepare('SELECT id, email, username, password_hash, created_at, last_login, onboarding_completed, feature_tour_completed FROM users WHERE email = ?').get(sanitizedEmail) as any;
 
     if (!userRow) {
       return { success: false, error: 'Invalid email or password' };

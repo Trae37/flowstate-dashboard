@@ -296,7 +296,7 @@ async function captureIDEState(
         if (fs.existsSync(workspaceJsonPath)) {
           try {
             const workspaceData = JSON.parse(fs.readFileSync(workspaceJsonPath, 'utf-8'));
-            logger.log(`[IDE Capture] Workspace data:`, workspaceData);
+            logger.debug(`[IDE Capture] Workspace data keys: ${Object.keys(workspaceData).join(', ')}`);
 
             // Get workspace folder path
             if (workspaceData.folder) {

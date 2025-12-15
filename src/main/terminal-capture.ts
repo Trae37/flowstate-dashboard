@@ -397,14 +397,8 @@ function getLastExecutedCommand(commandHistory: string[]): string | undefined {
 export async function captureTerminalSessions(): Promise<TerminalCaptureResult> {
   let sessions: TerminalSession[] = [];
 
-  // Helper to log to both console and renderer
-  const logDebug = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const logDebug = (...args: any[]) => logger.debug(...args);
 
   logDebug('[Terminal Capture] Starting terminal capture...');
   logDebug('[Terminal Capture] Platform:', process.platform);
@@ -829,14 +823,8 @@ async function captureWindowsTerminalSessions(): Promise<TerminalSession[]> {
 async function capturePowerShellSessions(): Promise<TerminalSession[]> {
   const sessions: TerminalSession[] = [];
 
-  // Helper to log to both console and renderer
-  const logDebug = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const logDebug = (...args: any[]) => logger.debug(...args);
 
   logDebug('[PowerShell Capture] Starting PowerShell capture...');
 
@@ -3293,22 +3281,9 @@ export async function restoreTerminalSession(session: TerminalSession): Promise<
 async function restoreWindowsTerminal(session: TerminalSession, startupScript: string | null): Promise<void> {
   const cwd = session.currentDirectory || os.homedir();
 
-  // Log to both console and renderer
-  const log = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
-  
-  const logDebug = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const log = (...args: any[]) => logger.log(...args);
+  const logDebug = (...args: any[]) => logger.debug(...args);
 
   // Resolve Windows Terminal executable path strictly (no terminal-type fallback)
   const resolveWtExecutable = async (): Promise<string> => {

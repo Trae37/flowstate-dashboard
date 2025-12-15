@@ -171,14 +171,8 @@ async function getTabsFromPort(port: number, browserName: string): Promise<Brows
     const targets = await CDP.List({ port });
     const tabs: BrowserTab[] = [];
 
-    // Helper to log to both console and renderer
-    const logCapture = (...args: any[]) => {
-      logger.log(...args);
-      try {
-        const logToRenderer = (global as any).logToRenderer;
-        if (logToRenderer) logToRenderer(...args);
-      } catch {}
-    };
+    // Logger already forwards to renderer via setRendererLogger
+    const logCapture = (...args: any[]) => logger.log(...args);
 
     logCapture(`[Browser Capture] Found ${targets.length} target(s) on port ${port}`);
     logCapture(`[Browser Capture] Target types: ${[...new Set(targets.map(t => t.type))].join(', ')}`);
@@ -433,14 +427,8 @@ export async function captureBrowserSessions(): Promise<BrowserSession[]> {
   const sessions: BrowserSession[] = [];
   const checkedPorts = new Set<number>();
 
-  // Helper to log to both console and renderer
-  const logCapture = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const logCapture = (...args: any[]) => logger.log(...args);
 
   logCapture('[Browser Capture] ============================================');
   logCapture('[Browser Capture] Starting browser capture...');

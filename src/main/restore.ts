@@ -367,14 +367,8 @@ async function restoreTerminalAsset(asset: Asset): Promise<void> {
     try {
       const { restoreTerminalSession } = await import('./terminal-capture.js');
 
-      // Helper to log to both console and renderer
-      const logDebug = (...args: any[]) => {
-        logger.log(...args);
-        try {
-          const logToRenderer = (global as any).logToRenderer;
-          if (logToRenderer) logToRenderer(...args);
-        } catch {}
-      };
+      // Logger already forwards to renderer via setRendererLogger
+      const logDebug = (...args: any[]) => logger.debug(...args);
 
       // Parse metadata - it should already be normalized by restoreAsset
       let metadata: any = null;
@@ -1043,14 +1037,8 @@ export async function restoreAsset(assetId: number): Promise<void> {
     throw new Error(`Asset with ID ${assetId} not found`);
   }
 
-  // Helper to log to both console and renderer
-  const logDebug = (...args: any[]) => {
-    logger.log(...args);
-    try {
-      const logToRenderer = (global as any).logToRenderer;
-      if (logToRenderer) logToRenderer(...args);
-    } catch {}
-  };
+  // Logger already forwards to renderer via setRendererLogger
+  const logDebug = (...args: any[]) => logger.debug(...args);
 
   logDebug(`[DEBUG Restore] Restoring individual asset: ${asset.title} (${asset.asset_type})`);
   logDebug(`[DEBUG Restore] Asset metadata from database:`);

@@ -10,6 +10,7 @@ sentry.properties
 
 # Build output
 dist/
+build/
 
 # Logs
 *.log

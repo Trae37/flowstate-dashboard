@@ -12,7 +12,7 @@ const execPromise = promisify(exec);
  * Global cancellation flag for restoration operations
  */
 let isRestorationCancelled = false;
-// Reserved for future use (e.g., tracking specific restoration operations)
+// Track the current restoration operation ID (private/internal use only)
 let _currentRestorationId: string | null = null;
 
 /**

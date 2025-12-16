@@ -31,6 +31,13 @@ const getDashboardTourSteps = (hasCaptures: boolean = true): TourStep[] => {
     position: 'bottom',
   },
   {
+    id: 'sessions-sidebar',
+    target: '[data-tour="sessions-sidebar"]',
+    title: 'Sessions Sidebar',
+    description: 'Sessions organize your captures by work period. Each session groups related captures together - like a project folder for your workspace states. Create new sessions for different projects or tasks.',
+    position: 'right',
+  },
+  {
     id: 'current-workspace',
     title: 'Current Workspace',
     description: 'This shows your most recent capture with a preview of saved assets. You can see browser tabs, terminal history, code files, and notes.',
@@ -38,9 +45,8 @@ const getDashboardTourSteps = (hasCaptures: boolean = true): TourStep[] => {
     noHighlight: true,
   },
   ];
-  
+
   // Only add capture-related steps if there are captures
-  // Dashboard tour should have exactly 5 steps total (3 base + 2 capture steps)
   if (hasCaptures) {
     baseSteps.push(
       {
@@ -51,18 +57,16 @@ const getDashboardTourSteps = (hasCaptures: boolean = true): TourStep[] => {
         noHighlight: true,
       },
       {
-        id: 'example-capture',
+        id: 'view-details',
         target: '[data-tour="capture-card"]',
-        title: 'Example Capture',
-        description: 'This is an example capture showing what your saved workspaces look like. Click on any capture card to open the detailed view where you can see all assets and restore them individually or all at once.',
-        position: 'center',
+        title: 'View Capture Details',
+        description: 'Click this button to open the detailed view where you can see all captured assets and restore them individually or all at once.',
+        position: 'top',
         action: 'click',
       }
     );
   }
-  
-  // Dashboard tour ends here (5 steps total: 3 base + 2 capture steps if hasCaptures)
-  // Settings and user-menu are not part of the onboarding tour
+
   return baseSteps;
 };
 
@@ -92,8 +96,87 @@ const getDetailTourSteps = (): TourStep[] => [
     id: 'back-to-dashboard',
     target: '[data-tour="back-to-dashboard"]',
     title: 'Back to Dashboard',
-    description: 'Click here to return to the main dashboard and view all your captures.',
+    description: 'Click here to return to the dashboard. Next, we\'ll show you the Archive where you can store important captures.',
     position: 'bottom',
+    action: 'click',
+  },
+];
+
+// Dashboard steps shown after returning from detail page (shows archive button)
+const getDashboardAfterDetailTourSteps = (): TourStep[] => [
+  {
+    id: 'archive-button',
+    target: '[data-tour="archive-button"]',
+    title: 'Archive Button',
+    description: 'The Archive is where you can store important captures for safekeeping. Archived items are protected from automatic cleanup. Click to explore the Archive.',
+    position: 'right',
+    action: 'click',
+  },
+];
+
+const getArchiveTourSteps = (): TourStep[] => [
+  {
+    id: 'archive-intro',
+    title: 'Archive Page',
+    description: 'The Archive is where your archived sessions and captures are stored. Items here are protected from automatic cleanup and organized by date.',
+    position: 'center',
+    noHighlight: true,
+  },
+  {
+    id: 'archive-folders',
+    title: 'Date Folders',
+    description: 'Archived items are organized into folders by date. Click any folder to view the sessions and captures archived on that day.',
+    position: 'center',
+    noHighlight: true,
+  },
+  {
+    id: 'archive-actions',
+    title: 'Archive Actions',
+    description: 'You can unarchive items to bring them back to your active workspace, or permanently delete them. Archived captures are never automatically deleted.',
+    position: 'center',
+    noHighlight: true,
+  },
+  {
+    id: 'navigate-to-settings',
+    title: 'Next: Settings Page',
+    description: 'Finally, let\'s explore the Settings page where you can customize FlowState to work the way you want.',
+    position: 'center',
+    noHighlight: true,
+    action: 'navigate',
+    navigateTo: '/settings',
+  },
+];
+
+const getSettingsTourSteps = (): TourStep[] => [
+  {
+    id: 'settings-intro',
+    title: 'Settings Page',
+    description: 'Here you can configure FlowState Dashboard to match your workflow. Let\'s go through the key settings.',
+    position: 'center',
+    noHighlight: true,
+  },
+  {
+    id: 'settings-capture-section',
+    target: '[data-tour="settings-capture"]',
+    title: 'Capture Settings',
+    description: 'Configure how captures work: enable Smart Capture to filter out idle terminals, set up automatic workspace captures, and enable Battery Saver mode.',
+    position: 'right',
+  },
+  {
+    id: 'settings-browser-section',
+    target: '[data-tour="settings-browser"]',
+    title: 'Browser Debugging',
+    description: 'Important! To capture browser tabs, you need to launch your browser with debugging enabled. Use these buttons to launch Chrome, Brave, or Edge with the right settings.',
+    position: 'right',
+  },
+  {
+    id: 'tour-complete',
+    title: 'Tour Complete!',
+    description: 'You\'re all set! Start capturing your workspace to preserve your development context. Click Finish to return to the Dashboard.',
+    position: 'center',
+    noHighlight: true,
+    action: 'navigate',
+    navigateTo: '/',
   },
 ];
 
@@ -106,29 +189,48 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const [targetElement, setTargetElement] = useState<HTMLElement | null>(null);
   const [tooltipPosition, setTooltipPosition] = useState({ top: 0, left: 0 });
+  const [adjustedPosition, setAdjustedPosition] = useState<{ top: number; left: number } | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   
-  // Get tour steps based on current route - memoized to prevent unnecessary recalculations
+  // Track tour phase using sessionStorage
+  const [tourPhase, setTourPhase] = useState<string>(() => {
+    return sessionStorage.getItem('feature_tour_phase') || 'dashboard';
+  });
+
+  // Get tour steps based on current route and phase
   const tourSteps = useMemo(() => {
     if (location.pathname.startsWith('/context/')) {
       return getDetailTourSteps();
     }
+    if (location.pathname === '/archive' || location.pathname.startsWith('/archive/')) {
+      return getArchiveTourSteps();
+    }
+    if (location.pathname === '/settings') {
+      return getSettingsTourSteps();
+    }
+    // Dashboard: check if we're returning from detail page
+    if (tourPhase === 'after-detail') {
+      return getDashboardAfterDetailTourSteps();
+    }
     return getDashboardTourSteps(hasCaptures);
-  }, [location.pathname, hasCaptures]);
+  }, [location.pathname, hasCaptures, tourPhase]);
   
-  // Reset step to 0 when route changes during tour (dashboard -> detail view)
+  // Reset step to 0 when route changes during tour
   useEffect(() => {
     const tourInProgress = sessionStorage.getItem('feature_tour_in_progress') === 'true';
     if (tourInProgress) {
-      // If we're on detail page and step is still pointing to dashboard steps, reset
-      if (location.pathname.startsWith('/context/') && currentStep >= getDashboardTourSteps(hasCaptures).length) {
+      // When route changes, the tourSteps will update via useMemo
+      // We just need to ensure currentStep doesn't exceed the new route's step count
+      const maxSteps = tourSteps.length;
+      if (currentStep >= maxSteps) {
         setCurrentStep(0);
       }
     }
-  }, [location.pathname, currentStep, hasCaptures]);
+  }, [location.pathname, currentStep, tourSteps.length]);
 
   const updateTooltipPosition = (element: HTMLElement, position: string) => {
     const rect = element.getBoundingClientRect();
@@ -174,10 +276,10 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
       if (step.noHighlight || !step.target) {
         // Just center the tooltip, no element highlighting needed
         setTargetElement(null);
-        // Set tooltip to center of screen
-        setTooltipPosition({ 
-          top: window.innerHeight / 2, 
-          left: window.innerWidth / 2 
+        // Position tooltip higher on screen (25% from top) so text is more visible
+        setTooltipPosition({
+          top: window.innerHeight * 0.25,
+          left: window.innerWidth / 2
         });
         return;
       }
@@ -320,6 +422,60 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
     }
   }, [currentStep, tourSteps, location.pathname]);
 
+  // Adjust tooltip position to stay within viewport bounds
+  useEffect(() => {
+    if (!tooltipRef.current) {
+      setAdjustedPosition(null);
+      return;
+    }
+
+    // Wait a frame for the tooltip to render with initial position
+    requestAnimationFrame(() => {
+      if (!tooltipRef.current) return;
+
+      const tooltip = tooltipRef.current;
+      const rect = tooltip.getBoundingClientRect();
+      const padding = 16; // Minimum padding from viewport edges
+
+      let newTop = tooltipPosition.top;
+      let newLeft = tooltipPosition.left;
+      let needsAdjustment = false;
+
+      // Check if tooltip goes off the bottom of the viewport
+      if (rect.bottom > window.innerHeight - padding) {
+        // Move it up so it's fully visible
+        const overflow = rect.bottom - (window.innerHeight - padding);
+        newTop = tooltipPosition.top - overflow;
+        needsAdjustment = true;
+      }
+
+      // Check if tooltip goes off the top of the viewport
+      if (rect.top < padding) {
+        newTop = padding + rect.height / 2; // Account for transform
+        needsAdjustment = true;
+      }
+
+      // Check if tooltip goes off the right of the viewport
+      if (rect.right > window.innerWidth - padding) {
+        const overflow = rect.right - (window.innerWidth - padding);
+        newLeft = tooltipPosition.left - overflow;
+        needsAdjustment = true;
+      }
+
+      // Check if tooltip goes off the left of the viewport
+      if (rect.left < padding) {
+        newLeft = padding + rect.width / 2; // Account for transform
+        needsAdjustment = true;
+      }
+
+      if (needsAdjustment) {
+        setAdjustedPosition({ top: newTop, left: newLeft });
+      } else {
+        setAdjustedPosition(null);
+      }
+    });
+  }, [tooltipPosition, currentStep, targetElement]);
+
   const handleNext = () => {
     try {
       // Clean up previous element styles but DON'T set targetElement to null yet
@@ -342,25 +498,51 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
       // Handle click actions (like clicking a capture card to navigate)
       if (step.action === 'click') {
         try {
-          // If noHighlight, try to find the element by target selector
+          // Always try to find the element by selector first for click actions
           let clickable: HTMLElement | null = null;
-          if (step.noHighlight && step.target) {
+
+          if (step.target) {
+            // Find element by selector
             const element = document.querySelector(step.target) as HTMLElement;
-            clickable = element?.closest('a, button') || element?.querySelector('a, button') || element;
-          } else if (targetElement) {
+            if (element) {
+              // For buttons/links, use them directly; for other elements, find clickable child/parent
+              if (element.tagName === 'BUTTON' || element.tagName === 'A') {
+                clickable = element;
+              } else {
+                clickable = element.closest('a, button') || element.querySelector('a, button') || element;
+              }
+            }
+          }
+
+          // Fallback to targetElement if selector didn't find anything
+          if (!clickable && targetElement) {
             clickable = targetElement.closest('a, button') || targetElement.closest('[data-tour="capture-card"]')?.querySelector('a');
           }
-          
+
+          console.log(`[FeatureTour] Click action for step "${step.id}": clickable =`, clickable);
+
           if (clickable) {
+            // Set tour phase based on which step we're clicking
+            if (step.id === 'back-to-dashboard') {
+              // Returning from detail page to dashboard - show archive button next
+              sessionStorage.setItem('feature_tour_phase', 'after-detail');
+              setTourPhase('after-detail');
+            } else if (step.id === 'archive-button') {
+              // Going to archive page - set archive phase
+              sessionStorage.setItem('feature_tour_phase', 'archive');
+              setTourPhase('archive');
+            }
+
+            console.log(`[FeatureTour] Clicking element for step "${step.id}"`);
             (clickable as HTMLElement).click();
             // Navigation will happen, and the useEffect will detect the route change
-            // Reset step to 0 for the detail view tour steps
-            // Use a longer timeout to ensure navigation completes
+            // Reset step to 0 for the new page's tour steps
             setTimeout(() => {
-              // Reset to first step of detail tour
               setCurrentStep(0);
             }, 800);
             return;
+          } else {
+            console.warn(`[FeatureTour] No clickable element found for step "${step.id}" with target "${step.target}"`);
           }
         } catch (error) {
           console.error('[FeatureTour] Error handling click action:', error);
@@ -370,23 +552,33 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
       // Handle navigation actions
       if (step.action === 'navigate' && step.navigateTo) {
         try {
+          // Check if this is the final step (tour complete)
+          const isLastStep = currentStep === tourSteps.length - 1;
+
+          // Set tour phase based on destination
+          if (step.navigateTo === '/settings') {
+            sessionStorage.setItem('feature_tour_phase', 'settings');
+            setTourPhase('settings');
+          }
+
           navigate(step.navigateTo);
-          // Wait for navigation, then continue
+          // Wait for navigation, then reset to step 0 for new page's tour steps
           setTimeout(() => {
             try {
-              const newSteps = getTourSteps();
-              // Find the step index in the new route's steps
-              const nextStepIndex = newSteps.findIndex(s => s.id === step.id) + 1;
-              if (nextStepIndex > 0 && nextStepIndex < newSteps.length) {
-                setCurrentStep(nextStepIndex);
+              if (isLastStep && step.navigateTo === '/') {
+                // Tour is complete, navigating back to dashboard
+                sessionStorage.removeItem('feature_tour_phase');
+                onComplete();
               } else {
+                // Reset to first step of new page's tour
                 setCurrentStep(0);
               }
             } catch (error) {
-              console.error('[FeatureTour] Error navigating:', error);
+              console.error('[FeatureTour] Error after navigation:', error);
+              sessionStorage.removeItem('feature_tour_phase');
               onComplete();
             }
-          }, 200);
+          }, 300);
           return;
         } catch (error) {
           console.error('[FeatureTour] Error in navigation action:', error);
@@ -427,9 +619,12 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
         }
         setTargetElement(null);
       }
+      // Clear tour phase on skip
+      sessionStorage.removeItem('feature_tour_phase');
       onComplete();
     } catch (error) {
       console.error('[FeatureTour] Error in handleSkip:', error);
+      sessionStorage.removeItem('feature_tour_phase');
       onComplete();
     }
   };
@@ -449,7 +644,7 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
       <div
         ref={overlayRef}
         className="fixed inset-0 bg-black/40 z-[9998] transition-opacity"
-        onClick={handleNext}
+        onClick={handleNext} // Click anywhere to advance to next step
       >
         {targetElement && !step.noHighlight && (
           <div
@@ -467,33 +662,27 @@ function FeatureTour({ onComplete, hasCaptures = true }: FeatureTourProps) {
       {/* Tooltip - always show for current step, position based on targetElement if available */}
       {step && (
         <div
+          ref={tooltipRef}
           className="fixed z-[9999] w-80 max-w-[calc(100vw-2rem)] bg-[#1E293B] border border-accent/30 rounded-lg shadow-2xl p-6"
+          onClick={(e) => e.stopPropagation()} // Prevent clicks on card from advancing
           style={{
-            top: targetElement 
-              ? (step.position === 'top' || step.position === 'center'
-                  ? `${tooltipPosition.top}px`
-                  : step.position === 'bottom'
-                  ? `${tooltipPosition.top}px`
-                  : `${tooltipPosition.top}px`)
-              : '50%',
-            left: targetElement
-              ? (step.position === 'left' || step.position === 'right' || step.position === 'center'
-                  ? `${tooltipPosition.left}px`
-                  : `${tooltipPosition.left}px`)
-              : '50%',
-            transform: targetElement
-              ? (step.position === 'center' 
-                  ? 'translate(-50%, -50%)' 
-                  : step.position === 'top' 
-                  ? 'translate(-50%, -100%)' 
+            top: `${adjustedPosition?.top ?? tooltipPosition.top}px`,
+            left: `${adjustedPosition?.left ?? tooltipPosition.left}px`,
+            transform: adjustedPosition
+              ? 'translate(-50%, -50%)' // Use centered transform when adjusted
+              : targetElement
+              ? (step.position === 'center'
+                  ? 'translate(-50%, -50%)'
+                  : step.position === 'top'
+                  ? 'translate(-50%, -100%)'
                   : step.position === 'bottom'
                   ? 'translate(-50%, 0)'
                   : step.position === 'left'
                   ? 'translate(-100%, -50%)'
                   : 'translate(0, -50%)')
-              : 'translate(-50%, -50%)', // Center if no element found
-            marginTop: step.position === 'top' ? '-10px' : '0',
-            marginLeft: step.position === 'left' ? '-10px' : '0',
+              : 'translate(-50%, -50%)', // Center horizontally, center vertically on calculated position
+            marginTop: !adjustedPosition && step.position === 'top' ? '-10px' : '0',
+            marginLeft: !adjustedPosition && step.position === 'left' ? '-10px' : '0',
           }}
         >
           <div className="flex items-start justify-between mb-3">

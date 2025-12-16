@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import FeatureTour from '../components/FeatureTour';
 import { getCurrentTimezone, getFormattedTimezone, getCommonTimezones } from '../utils/dateUtils';
 
 interface SettingsState {
@@ -31,7 +32,9 @@ function Settings() {
   const [browserLaunching, setBrowserLaunching] = useState<Record<string, boolean>>({});
   const [browserMessages, setBrowserMessages] = useState<Record<string, string>>({});
   const [browsersWithoutDebug, setBrowsersWithoutDebug] = useState<string[]>([]);
-  const { user } = useAuth();
+  const { user, completeFeatureTour } = useAuth();
+  const [showFeatureTour, setShowFeatureTour] = useState(false);
+  const tourInitializedRef = useRef(false);
 
   useEffect(() => {
     if (user?.id) {
@@ -42,6 +45,28 @@ function Settings() {
       return () => clearInterval(interval);
     }
   }, [user?.id]);
+
+  // Feature tour continuation
+  useEffect(() => {
+    if (showFeatureTour || tourInitializedRef.current ||
+        sessionStorage.getItem('feature_tour_completed') === 'true') {
+      return;
+    }
+
+    const tourInProgress = sessionStorage.getItem('feature_tour_in_progress') === 'true';
+    const tourPhase = sessionStorage.getItem('feature_tour_phase');
+
+    console.log('[Settings] Tour check:', { tourInProgress, tourPhase, loading, userTourCompleted: user?.feature_tour_completed });
+
+    if (tourInProgress && tourPhase === 'settings' && !loading && user && !user.feature_tour_completed) {
+      console.log('[Settings] Continuing tour on settings page');
+      tourInitializedRef.current = true;
+      // Small delay to let the page render
+      setTimeout(() => {
+        setShowFeatureTour(true);
+      }, 500);
+    }
+  }, [user, loading, user?.feature_tour_completed, showFeatureTour]);
 
   const checkBrowsersWithoutDebugging = async () => {
     try {
@@ -220,6 +245,18 @@ function Settings() {
     }
   };
 
+  const handleTourComplete = async () => {
+    console.log('[Settings] Tour completed');
+    tourInitializedRef.current = true;
+    setShowFeatureTour(false);
+    sessionStorage.removeItem('feature_tour_in_progress');
+    sessionStorage.removeItem('feature_tour_phase');
+    sessionStorage.setItem('feature_tour_completed', 'true');
+    if (user) {
+      await completeFeatureTour();
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-[#1a1d35] via-[#1e2542] to-[#151829] dark:from-[#1a1d35] dark:via-[#1e2542] dark:to-[#151829] bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50">
@@ -232,10 +269,11 @@ function Settings() {
     <div className="min-h-screen p-4 sm:p-6 lg:p-8 bg-gradient-to-br from-[#1a1d35] via-[#1e2542] to-[#151829] dark:from-[#1a1d35] dark:via-[#1e2542] dark:to-[#151829] bg-gradient-to-br from-gray-50 via-gray-100 to-gray-50">
       <div className="mx-auto max-w-4xl">
         {/* Header */}
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex items-center justify-between" data-tour="settings-header">
           <Link
             to="/"
             className="flex items-center gap-2 text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+            data-tour="settings-back-button"
           >
             <span className="material-symbols-outlined">arrow_back</span>
             <span>Back to Dashboard</span>
@@ -252,7 +290,7 @@ function Settings() {
         {/* Settings Cards */}
         <div className="space-y-6">
           {/* Capture Settings */}
-          <div className="bg-gray-200 dark:bg-[#1E293B]/60 rounded-2xl p-6 border border-gray-300 dark:border-white/5">
+          <div className="bg-gray-200 dark:bg-[#1E293B]/60 rounded-2xl p-6 border border-gray-300 dark:border-white/5" data-tour="settings-capture">
             <div className="flex items-center gap-3 mb-6">
               <span className="material-symbols-outlined text-accent text-2xl">
                 camera_alt
@@ -497,7 +535,7 @@ function Settings() {
           </div>
 
           {/* Browser Debugging Settings */}
-          <div className="bg-gray-200 dark:bg-[#1E293B]/60 rounded-2xl p-6 border border-gray-300 dark:border-white/5">
+          <div className="bg-gray-200 dark:bg-[#1E293B]/60 rounded-2xl p-6 border border-gray-300 dark:border-white/5" data-tour="settings-browser">
             <div className="flex items-center gap-3 mb-6">
               <span className="material-symbols-outlined text-blue-400 dark:text-blue-400 text-blue-600 text-2xl">
                 public
@@ -728,6 +766,9 @@ function Settings() {
           </div>
         </div>
       </div>
+
+      {/* Feature Tour */}
+      {showFeatureTour && <FeatureTour onComplete={handleTourComplete} />}
     </div>
   );
 }

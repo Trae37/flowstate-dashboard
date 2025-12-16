@@ -450,6 +450,94 @@ export async function createDemoCapture(userId?: number): Promise<Capture> {
   };
 }
 
+/**
+ * Create demo archived captures for the archive page tour
+ */
+export async function createDemoArchivedCaptures(userId: number): Promise<Capture[]> {
+  const { prepare, saveDatabase } = await import('./database.js');
+
+  const archivedCaptures: Capture[] = [];
+
+  const demoCaptures = [
+    {
+      name: 'Research Session - Machine Learning',
+      description: 'Archived research on ML algorithms and implementations',
+      daysAgo: 3,
+    },
+    {
+      name: 'Bug Fix - Login Flow',
+      description: 'Archived debugging session for authentication issues',
+      daysAgo: 7,
+    },
+  ];
+
+  for (const demo of demoCaptures) {
+    // Create capture with is_archived = 1
+    const createdAt = new Date();
+    createdAt.setDate(createdAt.getDate() - demo.daysAgo);
+
+    const insertCapture = prepare(
+      'INSERT INTO captures (name, context_description, user_id, is_archived, created_at) VALUES (?, ?, ?, 1, ?)'
+    );
+
+    const result = insertCapture.run(
+      demo.name,
+      demo.description,
+      userId,
+      createdAt.toISOString()
+    );
+    const captureId = result.lastInsertRowid as number;
+
+    if (!captureId || captureId === 0) {
+      continue;
+    }
+
+    // Create example assets for this archived capture
+    const insertAsset = prepare(`
+      INSERT INTO assets (capture_id, asset_type, title, path, content, metadata)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    const exampleAssets = [
+      {
+        asset_type: 'browser',
+        title: `${demo.name} - Documentation`,
+        path: 'https://example.com/docs',
+        content: 'https://example.com/docs',
+        metadata: JSON.stringify({ browser: 'chrome' }),
+      },
+      {
+        asset_type: 'terminal',
+        title: 'Terminal Session',
+        path: 'C:\\Users\\Example\\project',
+        content: 'git status\ngit log --oneline -5',
+        metadata: JSON.stringify({ shellType: 'powershell' }),
+      },
+    ];
+
+    for (const asset of exampleAssets) {
+      insertAsset.run(
+        captureId,
+        asset.asset_type,
+        asset.title,
+        asset.path,
+        asset.content,
+        asset.metadata
+      );
+    }
+
+    archivedCaptures.push({
+      id: captureId,
+      name: demo.name,
+      created_at: createdAt.toISOString(),
+      context_description: demo.description,
+    });
+  }
+
+  await saveDatabase();
+  return archivedCaptures;
+}
+
 export async function captureWorkspace(
   name?: string,
   userId?: number,

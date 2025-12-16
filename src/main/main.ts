@@ -631,11 +631,21 @@ function createWindow() {
     });
   }
 
+  // Track if we've already handled a load failure to prevent infinite recursion
+  let loadFailureHandled = false;
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
     safeError('[Main] Failed to load page:', errorCode, errorDescription);
+
+    // Prevent infinite recursion - only handle once
+    if (loadFailureHandled) {
+      return;
+    }
+    loadFailureHandled = true;
+
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show(); // Show window even if load failed
-      
+
       // Show error message in window
       const errorHtml = `
         <!DOCTYPE html>
@@ -2291,6 +2301,24 @@ ipcMain.handle('create-demo-capture', async (_, userId?: number) => {
     return { success: true, data: capture };
   } catch (error) {
     safeError('[Main IPC] Create demo capture error:', error);
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('create-demo-archived-captures', async (_, userId?: number) => {
+  try {
+    const { validateId } = await import('./utils/security.js');
+    const { ErrorCode } = await import('./utils/errors.js');
+
+    if (typeof userId !== 'number' || !validateId(userId)) {
+      return { success: false, error: 'Invalid userId', code: ErrorCode.INVALID_INPUT };
+    }
+    safeLog(`[Main IPC] Creating demo archived captures for user ${userId}`);
+    const { createDemoArchivedCaptures } = await import('./capture.js');
+    const captures = await createDemoArchivedCaptures(userId);
+    return { success: true, data: captures };
+  } catch (error) {
+    safeError('[Main IPC] Create demo archived captures error:', error);
     return { success: false, error: (error as Error).message };
   }
 });

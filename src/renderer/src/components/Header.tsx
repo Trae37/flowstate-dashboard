@@ -77,6 +77,14 @@ function Header({
             </button>
             
             <Link
+              to="/help"
+              className="text-gray-900 dark:text-white/60 hover:text-gray-700 dark:hover:text-white transition-colors p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-white/5"
+              title="Help"
+            >
+              <span className="material-symbols-outlined">help</span>
+            </Link>
+
+            <Link
               data-tour="settings"
               to="/settings"
               className="text-gray-900 dark:text-white/60 hover:text-gray-700 dark:hover:text-white transition-colors p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-white/5"

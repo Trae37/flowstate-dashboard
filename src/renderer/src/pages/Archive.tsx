@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import Header from '../components/Header';
+import FeatureTour from '../components/FeatureTour';
 import { formatFullDateTime } from '../utils/dateUtils';
 
 interface WorkSession {
@@ -34,13 +35,15 @@ interface Asset {
 }
 
 function Archive() {
-  const { user } = useAuth();
+  const { user, completeFeatureTour } = useAuth();
   const navigate = useNavigate();
   const { date: dateParam } = useParams<{ date?: string }>();
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+  const [showFeatureTour, setShowFeatureTour] = useState(false);
+  const tourInitializedRef = useRef(false);
 
   // Menu and action states
   const [showSessionMenu, setShowSessionMenu] = useState<number | null>(null);
@@ -50,6 +53,60 @@ function Archive() {
 
   // Decode the date parameter if present
   const selectedDate = dateParam ? decodeURIComponent(dateParam) : null;
+
+  // Check if feature tour should continue on archive page
+  useEffect(() => {
+    // Don't run if tour is already showing, already initialized, or marked as completed
+    if (showFeatureTour ||
+        tourInitializedRef.current ||
+        sessionStorage.getItem('feature_tour_completed') === 'true') {
+      return;
+    }
+
+    const featureTourCompleted = user?.feature_tour_completed === true || user?.feature_tour_completed === 1;
+
+    // If already completed, mark in sessionStorage and return immediately
+    if (featureTourCompleted) {
+      sessionStorage.setItem('feature_tour_completed', 'true');
+      return;
+    }
+
+    if (user && !featureTourCompleted && !loading) {
+      // Check if we came from dashboard tour (archive phase)
+      const tourInProgress = sessionStorage.getItem('feature_tour_in_progress') === 'true';
+      const tourPhase = sessionStorage.getItem('feature_tour_phase');
+
+      if (tourInProgress && !showFeatureTour) {
+        console.log('[Archive] Tour in progress, phase:', tourPhase, '- showing archive tour');
+        setTimeout(() => {
+          // Final check before showing
+          const stillInProgress = sessionStorage.getItem('feature_tour_in_progress') === 'true';
+          const stillNotCompleted = !(user?.feature_tour_completed === true || user?.feature_tour_completed === 1);
+          if (stillInProgress && stillNotCompleted) {
+            tourInitializedRef.current = true;
+            setShowFeatureTour(true);
+          }
+        }, 500);
+      }
+    } else {
+      // Make sure tour is hidden if conditions aren't met
+      if (featureTourCompleted) {
+        setShowFeatureTour(false);
+        sessionStorage.removeItem('feature_tour_in_progress');
+      }
+    }
+  }, [user, loading, user?.feature_tour_completed, showFeatureTour]);
+
+  const handleTourComplete = async () => {
+    console.log('[Archive] Tour completed/skipped');
+    tourInitializedRef.current = true;
+    setShowFeatureTour(false);
+    sessionStorage.removeItem('feature_tour_in_progress');
+    sessionStorage.setItem('feature_tour_completed', 'true');
+    if (user) {
+      await completeFeatureTour();
+    }
+  };
 
   useEffect(() => {
     if (user?.id) {
@@ -74,13 +131,31 @@ function Archive() {
 
       // Load archived captures
       if (window.electronAPI?.getCaptures) {
-        const capturesResult = await window.electronAPI.getCaptures({ 
-          userId: user.id, 
-          includeArchived: true 
+        const capturesResult = await window.electronAPI.getCaptures({
+          userId: user.id,
+          includeArchived: true
         });
         if (capturesResult.success && capturesResult.data) {
           // Filter for archived captures only
-          const archivedCaptures = capturesResult.data.filter((c: any) => c.archived);
+          let archivedCaptures = capturesResult.data.filter((c: any) => c.archived);
+
+          // Check if feature tour is in progress and no archived items exist
+          const tourInProgress = sessionStorage.getItem('feature_tour_in_progress') === 'true';
+          if (tourInProgress && archivedCaptures.length === 0 && window.electronAPI?.createDemoArchivedCaptures) {
+            console.log('[Archive] Creating demo archived captures for tour...');
+            const demoResult = await window.electronAPI.createDemoArchivedCaptures(user.id);
+            if (demoResult.success && demoResult.data) {
+              // Reload captures to include the new demo captures
+              const reloadResult = await window.electronAPI.getCaptures({
+                userId: user.id,
+                includeArchived: true
+              });
+              if (reloadResult.success && reloadResult.data) {
+                archivedCaptures = reloadResult.data.filter((c: any) => c.archived);
+              }
+            }
+          }
+
           setCaptures(archivedCaptures);
         }
       }
@@ -244,14 +319,15 @@ function Archive() {
 
   return (
     <div className="flex min-h-screen">
+      {showFeatureTour && <FeatureTour onComplete={handleTourComplete} />}
       <div className="flex-1 flex flex-col">
-        <Header 
-          onCapture={() => navigate('/')} 
+        <Header
+          onCapture={() => navigate('/')}
           isCapturing={false}
         />
         <main className="flex-1 p-4 sm:p-6 lg:p-8">
           <div className="mx-auto max-w-7xl">
-            <header className="mb-6">
+            <header className="mb-6" data-tour="archive-header">
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h1 className="text-3xl font-bold text-gray-900 dark:text-white mb-2">Archive</h1>
@@ -262,6 +338,7 @@ function Archive() {
                 <Link
                   to="/"
                   className="flex items-center gap-2 text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+                  data-tour="archive-back-button"
                 >
                   <span className="material-symbols-outlined">arrow_back</span>
                   <span>Back to Dashboard</span>

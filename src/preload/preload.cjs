@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   authCompleteFeatureTour: (userId) => ipcRenderer.invoke('auth-complete-feature-tour', userId),
   authDeleteUser: (email) => ipcRenderer.invoke('auth-delete-user', email),
   createDemoCapture: (userId) => ipcRenderer.invoke('create-demo-capture', userId),
+  createDemoArchivedCaptures: (userId) => ipcRenderer.invoke('create-demo-archived-captures', userId),
   getPowerStatus: () => ipcRenderer.invoke('get-power-status'),
   // Session management methods
   sessionGetCurrent: (userId) => ipcRenderer.invoke('session-get-current', userId),

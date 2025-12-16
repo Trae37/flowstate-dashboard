@@ -11,6 +11,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Onboarding from './pages/Onboarding';
 import Archive from './pages/Archive';
+import Help from './pages/Help';
 import { useEffect } from 'react';
 
 // Protected route component
@@ -89,6 +90,7 @@ function AppRoutes() {
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       <Route path="/archive" element={<ProtectedRoute><Archive /></ProtectedRoute>} />
       <Route path="/archive/:date" element={<ProtectedRoute><Archive /></ProtectedRoute>} />
+      <Route path="/help" element={<ProtectedRoute><Help /></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -69,9 +69,19 @@ function Dashboard() {
 
   // Check if feature tour should be shown
   useEffect(() => {
+    // Check if we're returning from detail page to show archive button
+    const tourPhase = sessionStorage.getItem('feature_tour_phase');
+    const tourInProgress = sessionStorage.getItem('feature_tour_in_progress') === 'true';
+
+    if (tourInProgress && tourPhase === 'after-detail' && !showFeatureTour) {
+      // Returning from detail page, need to show archive button step
+      console.log('[Dashboard] Continuing tour after detail page - showing archive button step');
+      setShowFeatureTour(true);
+      return;
+    }
+
     // Don't run if tour is already showing, in progress, or marked as completed in sessionStorage
-    if (showFeatureTour || 
-        sessionStorage.getItem('feature_tour_in_progress') === 'true' || 
+    if (showFeatureTour || tourInProgress ||
         sessionStorage.getItem('feature_tour_completed') === 'true') {
       return;
     }
@@ -700,7 +710,7 @@ function Dashboard() {
           }}
         />
         <div className="flex-1 flex flex-col">
-          {showFeatureTour && <FeatureTour onComplete={handleTourComplete} hasCaptures={false} />}
+          {showFeatureTour && <FeatureTour onComplete={handleTourComplete} hasCaptures={true} />}
           <Header 
             onCapture={handleCapture} 
             isCapturing={isCapturing}
@@ -732,7 +742,7 @@ function Dashboard() {
         }}
       />
       <div className="flex-1 flex flex-col">
-        {showFeatureTour && <FeatureTour onComplete={handleTourComplete} hasCaptures={captures.length > 0} />}
+        {showFeatureTour && <FeatureTour onComplete={handleTourComplete} hasCaptures={true} />}
         <Header 
           onCapture={handleCapture} 
           isCapturing={isCapturing}
@@ -969,6 +979,7 @@ function Dashboard() {
               <button
                 onClick={() => navigate(`/context/${currentCapture.id}`)}
                 className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-accent hover:bg-accent/90 text-white dark:text-[#0F172A] font-semibold rounded-lg transition-colors"
+                data-tour="capture-card"
               >
                 <span>View Details</span>
                 <span className="material-symbols-outlined text-sm">arrow_forward</span>

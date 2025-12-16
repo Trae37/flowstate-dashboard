@@ -392,7 +392,7 @@ function SessionSidebar({
 
   return (
     <>
-      <div className="w-64 bg-white dark:bg-[#1E293B] flex flex-col h-screen relative overflow-hidden">
+      <div className="w-64 bg-white dark:bg-[#1E293B] flex flex-col h-screen relative overflow-hidden" data-tour="sessions-sidebar">
         {/* Top Section - Logo and Create Button */}
         <div className="p-4 border-b border-gray-200 dark:border-white/10">
           <div className="flex justify-center mb-0.5">
@@ -549,6 +549,7 @@ function SessionSidebar({
                 : 'bg-[#1E293B] dark:bg-[#0F172A] hover:bg-[#334155] dark:hover:bg-[#0F172A]/80 border-gray-300 dark:border-white/10 text-white'
             }`}
             aria-label="View archive"
+            data-tour="archive-button"
           >
             <span className="text-sm font-medium">Archive</span>
           </button>

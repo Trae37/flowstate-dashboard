@@ -32,20 +32,21 @@ class Analytics {
     try {
       // Dynamically import PostHog only if enabled
       const posthogLib = await import('posthog-js');
-      const PostHog = posthogLib.default;
+      const posthog = posthogLib.default;
 
       // Use self-hosted PostHog if host is provided, otherwise use PostHog Cloud
-      // TODO: Replace with your actual PostHog API key or set via environment variable
-      const apiKey = config.posthogApiKey || (typeof process !== 'undefined' && process.env?.VITE_POSTHOG_API_KEY) || 'phc_YOUR_API_KEY';
-      const host = config.posthogHost || (typeof process !== 'undefined' && process.env?.VITE_POSTHOG_HOST) || 'https://app.posthog.com';
-      
+      // In Vite, env vars are accessed via import.meta.env
+      const apiKey = config.posthogApiKey || import.meta.env.VITE_POSTHOG_API_KEY || 'phc_YOUR_API_KEY';
+      const host = config.posthogHost || import.meta.env.VITE_POSTHOG_HOST || 'https://app.posthog.com';
+
       // Don't initialize if API key is placeholder
       if (apiKey === 'phc_YOUR_API_KEY') {
         console.warn('[Analytics] PostHog API key not configured, analytics disabled. Set VITE_POSTHOG_API_KEY environment variable or configure in settings.');
         return;
       }
 
-      this.posthog = new PostHog(apiKey, {
+      // PostHog is a singleton - use init() instead of constructor
+      posthog.init(apiKey, {
         api_host: host,
         autocapture: false, // Disable automatic capture for privacy
         capture_pageview: false, // We'll manually track pageviews
@@ -55,15 +56,18 @@ class Analytics {
           maskAllText: true,
           blockClass: 'no-analytics', // Allow users to block specific elements
         },
-        loaded: (posthog) => {
+        loaded: (ph) => {
           // Identify user (anonymized)
-          posthog.identify(`user_${userId}`, {
+          ph.identify(`user_${userId}`, {
             // No PII - just user ID
           });
           this.initialized = true;
           console.log('[Analytics] PostHog initialized');
         },
       });
+
+      // Store the singleton reference
+      this.posthog = posthog;
     } catch (error) {
       console.error('[Analytics] Failed to initialize PostHog:', error);
       // Fail silently - don't break the app if analytics fails
@@ -229,14 +233,13 @@ class Analytics {
       // Note: This would need the config from settings
       console.log('[Analytics] Analytics enabled - reinitialize required');
     } else if (!enabled && this.posthog) {
-      // Shutdown PostHog if disabling
+      // Disable PostHog tracking (opt out)
       try {
-        this.posthog.shutdown();
-        this.posthog = null;
+        this.posthog.opt_out_capturing();
         this.initialized = false;
-        console.log('[Analytics] Analytics disabled and PostHog shutdown');
+        console.log('[Analytics] Analytics disabled - opted out of capturing');
       } catch (error) {
-        console.error('[Analytics] Failed to shutdown PostHog:', error);
+        console.error('[Analytics] Failed to disable PostHog:', error);
       }
     }
   }

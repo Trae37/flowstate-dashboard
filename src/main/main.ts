@@ -478,25 +478,28 @@ function createWindow() {
   });
 
   // Security: Set strict CSP headers based on environment
+  // PostHog domains: us.i.posthog.com (API), us-assets.i.posthog.com (scripts/config)
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     const csp = isDev
       ? // Development: Allow unsafe-inline, unsafe-eval, and unsafe-hashes for Vite HMR
         "default-src 'self'; " +
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval'; " + // Required for Vite HMR
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://us-assets.i.posthog.com; " + // Required for Vite HMR + PostHog
         "style-src 'self' 'unsafe-inline' 'unsafe-hashes' https://fonts.googleapis.com; " + // unsafe-hashes for event handler styles
         "font-src 'self' https://fonts.gstatic.com; " +
         "img-src 'self' data: https:; " +
-        "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com ws://localhost:* http://localhost:* https://o4510468375773184.ingest.us.sentry.io; " +
+        "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com ws://localhost:* http://localhost:* https://o4510468375773184.ingest.us.sentry.io https://us.i.posthog.com https://us-assets.i.posthog.com; " +
+        "worker-src 'self' blob:; " + // PostHog may use web workers
         "object-src 'none'; " +
         "base-uri 'self'; " +
         "form-action 'self';"
       : // Production: Strict CSP (but allow inline styles for Vite-generated assets)
         "default-src 'self'; " +
-        "script-src 'self'; " +
+        "script-src 'self' https://us-assets.i.posthog.com; " + // PostHog scripts
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " + // Allow inline styles for Vite
         "font-src 'self' https://fonts.gstatic.com; " +
         "img-src 'self' data: https:; " +
-        "connect-src 'self' https://o4510468375773184.ingest.us.sentry.io; " +
+        "connect-src 'self' https://o4510468375773184.ingest.us.sentry.io https://us.i.posthog.com https://us-assets.i.posthog.com; " + // PostHog API
+        "worker-src 'self' blob:; " + // PostHog may use web workers
         "object-src 'none'; " +
         "base-uri 'self'; " +
         "form-action 'self';";
@@ -1388,6 +1391,28 @@ ipcMain.handle('update-install', () => {
     return { success: true };
   } catch (error: any) {
     safeError('[AutoUpdater] Failed to install update:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('check-for-updates', async () => {
+  try {
+    if (!app.isPackaged) {
+      return { success: false, error: 'Updates only available in production builds', isDev: true };
+    }
+    safeLog('[AutoUpdater] Manual update check triggered');
+    const result = await updater.checkForUpdates();
+    if (result?.updateInfo) {
+      return {
+        success: true,
+        updateAvailable: true,
+        version: result.updateInfo.version,
+        releaseDate: result.updateInfo.releaseDate,
+      };
+    }
+    return { success: true, updateAvailable: false };
+  } catch (error: any) {
+    safeError('[AutoUpdater] Manual update check failed:', error);
     return { success: false, error: error.message };
   }
 });
